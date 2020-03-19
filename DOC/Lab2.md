@@ -55,3 +55,63 @@ The log entries append are quite different between leader and non-leader, there 
 Don’t forget the election timeout should be different between peers.
 Some wrapper functions in `rawnode.go` can implement with `raft.Step(local message)`
 When start a new raft, get the last stabled state from `Storage` to initialize `raft.Raft` and `raft.RaftLog`
+
+
+
+### Problem
+
+```go
+// RaftLog manage the log entries, its struct look like:
+//
+//  truncated.....first.....applied....committed....stabled.....last
+//  --------|     |------------------------------------------------|
+//  snapshot                                log entries
+//
+type RaftLog struct{
+  //...
+  // log entries with index <= stabled are stabled to storage
+	// Not very understanding the meaning of stable here
+  // What is the relationship between stabled and commited?
+  // I thought snapshot was only aimed at logs that were already commited.
+	stabled uint64
+
+}
+
+type Storage interface {
+  // ...
+
+	// Untruntated logs
+  Entries(lo, hi uint64) ([]pb.Entry, error)
+	
+  // Logs before firstIndex have been merged into the previous snapshot
+	// so those logs can be considered that they have been commited
+  FirstIndex() (uint64, error)
+  
+  //corresponding to raftLog's stabled, because all logs on the storage have been persisted
+  LastIndex() (uint64, error)
+  
+	// Snapshot returns the most recent snapshot.
+  Snapshot() (pb.Snapshot, error)
+}
+
+// I think here should be some more tips for the conversion of storage and RaftLog
+// mainly for the descriptions of firstIndex and LastIndex of storage can be associated with RaftLog.
+func newLog(storage Storage) *RaftLog {
+   // Your Code Here (2A).
+   return nil
+}
+
+// It is recommended to add this function definition
+func (l *RaftLog) FirstIndex() uint64 {
+	return l.entries[0].Index
+}
+
+// It is recommended to put this function in front
+func (l *RaftLog) LastIndex() uint64 {
+	// Your Code Here (2A).
+	return l.entries[len(l.entries)-1].Index
+}
+
+
+
+```
