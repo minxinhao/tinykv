@@ -112,6 +112,7 @@ func (l *RaftLog) LastIndex() uint64 {
 	return l.entries[len(l.entries)-1].Index
 }
 
-
-
 ```
+
+Personal suggestions to the order of implement:
+1. first implementation of RaftLog and then step-related content, write your own tick first today to write half stuck

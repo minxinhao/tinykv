@@ -14,7 +14,11 @@
 
 package raft
 
-import pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+import (
+	"errors"
+
+	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+)
 
 // RaftLog manage the log entries, its struct look like:
 //
@@ -60,6 +64,9 @@ type RaftLog struct {
 // mainly for the descriptions of firstIndex and LastIndex of storage can be associated with RaftLog.
 func newLog(storage Storage) *RaftLog {
 	// Your Code Here (2A).
+	if storage == nil {
+		panic(errors.New("storage cannot be nil"))
+	}
 	raftLog := new(RaftLog)
 	raftLog.storage = storage
 
