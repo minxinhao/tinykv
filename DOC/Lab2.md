@@ -20,6 +20,8 @@ This part can be broken down into 3 steps, including:
 #####  Leader election
 To implement leader election, you may want to start with `raft.Raft.tick()` which is used to advance the internal logical clock by a single tick and hence drive the election timeout or heartbeat timeout. If you need to send out a message just push it to `raft.Raft.msgs` and all messages the raft received will be pass to `raft.Raft.Step()`, which  is the entrance of message handling, now you can handle some messages like `MsgRequestVote`, `MsgHeartbeat`  and their response. And also implement functions like `raft.Raft.becomeXXX` which used to update the raft internal state when the raft’s role changes.
 
+> This part only need to implement
+
 ##### Log replication
 To implement log replication, you may want to start with handling `MsgAppend` and `MsgAppendResponse` on both sender and receiver side. Checkout `raft.RaftLog` in `raft/log.go` which is a helper struct that help you manage the raft log, in here you also need to interact with the upper application by the `Storage` interface define in `raft/storage.go` to get the persisted data like log entries and snapshot.
 #### Implement the raw node interface
@@ -115,4 +117,5 @@ func (l *RaftLog) LastIndex() uint64 {
 ```
 
 Personal suggestions to the order of implement:
-1. first implementation of RaftLog and then step-related content, write your own tick first today to write half stuck
+1. First to implement RaftLog 
+2. and then to implement Step-related content, i wrote first tick today half stuck
