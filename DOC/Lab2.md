@@ -66,8 +66,8 @@ When start a new raft, get the last stabled state from `Storage` to initialize `
 // RaftLog manage the log entries, its struct look like:
 //
 //  truncated.....first.....applied....committed....stabled.....last
-//  --------|     |------------------------------------------------|
-//  snapshot                                log entries
+//  ---------------------------------------------------------------|
+//  snapshot |consective|           log entries
 //
 type RaftLog struct{
   //...

@@ -263,3 +263,36 @@ func (l *RaftLog) Append(index, term, committed uint64, entries ...pb.Entry) (la
 	}
 	return 0, false
 }
+
+func (l *RaftLog) Commit(index, term uint64) bool {
+	if index > l.committed && l.matchForTerm(index, term) {
+		if l.LastIndex() < index {
+			panic(errors.New("Commit unexist entry"))
+		}
+		l.committed = index
+		return true
+	}
+	return false
+}
+
+func (l *RaftLog) Applied(index uint64) {
+	if index == 0 {
+		return
+	}
+	if l.committed < index || index < l.applied {
+		panic(errors.New("Apply invalid entry"))
+	}
+	l.applied = index
+}
+
+func (l *RaftLog) Stabled(index, term uint64) {
+	if l.matchForTerm(index, term) && l.stabled < index {
+		l.stabled = index
+	}
+}
+
+func (l *RaftLog) StableSnap(index uint64) {
+	if l.pendingSnapshot != nil && l.pendingSnapshot.Metadata.Index == index {
+		l.pendingSnapshot = nil
+	}
+}

@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"sort"
 	"time"
 
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
@@ -273,6 +274,9 @@ func (r *Raft) tick() {
 	// Your Code Here (2A).
 	if r.State == StateLeader {
 		r.heartbeatElapsed++
+		// I failed test TestFollowerStartElection2AA without this
+		// why leader need to maintain electionElapsed
+		r.electionElapsed++
 		if r.heartbeatElapsed >= r.heartbeatTimeout {
 			r.heartbeatElapsed = 0
 			r.Step(pb.Message{From: r.id, MsgType: pb.MessageType_MsgBeat})
@@ -346,6 +350,9 @@ func (r *Raft) Step(m pb.Message) error {
 	// Your Code Here (2A).
 
 	// Rules for all servers
+	if m.Term < r.Term {
+		return nil
+	}
 	// if m.Term > r.Term && r.Lead == None {
 	if m.Term > r.Term {
 		if m.MsgType == pb.MessageType_MsgAppend || m.MsgType == pb.MessageType_MsgHeartbeat || m.MsgType == pb.MessageType_MsgSnapshot {
@@ -443,8 +450,8 @@ func (r *Raft) StepMsgHup() {
 }
 
 func (r *Raft) LeaderStep(m pb.Message) error {
-	pr := r.Prs[m.From]
-	if pr == nil && m.MsgType != pb.MessageType_MsgBeat && m.MsgType != pb.MessageType_MsgPropose {
+	progress := r.Prs[m.From]
+	if progress == nil && m.MsgType != pb.MessageType_MsgBeat && m.MsgType != pb.MessageType_MsgPropose {
 		return nil
 	}
 	switch m.MsgType {
@@ -455,13 +462,55 @@ func (r *Raft) LeaderStep(m pb.Message) error {
 			}
 			r.sendHeartbeat(id)
 		}
-		return nil
 	case pb.MessageType_MsgPropose:
-		return nil
+
 	case pb.MessageType_MsgAppendResponse:
+		if m.Reject {
+			rejectFlag := true
+			if m.Index <= progress.Match {
+				rejectFlag = false
+			}
+			// m.RejectHint maybe 0 if follower has  empty entry and  snapshot
+			if progress.Next = min(m.Index, m.RejectHint+1); progress.Next < 1 {
+				progress.Next = 1
+			}
+			if rejectFlag {
+				r.sendAppend(m.From)
+			}
+		} else {
+			updatedFlag := false
+			if progress.Match < m.Index {
+				progress.Match = m.Index
+				updatedFlag = true
+			}
+			if progress.Next < m.Index+1 {
+				progress.Next = m.Index + 1
+			}
+			if updatedFlag {
+				matchIndexs := make(uint64Slice, len(r.Prs))
+				id := 0
+				for _, p := range r.Prs {
+					matchIndexs[id] = p.Match
+					id++
+				}
+				sort.Sort(matchIndexs)
+				max_consist_index := matchIndexs[len(matchIndexs)-((len(r.votes)+1)/2)]
+				commitFlag := r.RaftLog.Commit(max_consist_index, r.Term)
 
+				if commitFlag {
+					for id, _ := range r.Prs {
+						if id == r.id {
+							continue
+						}
+						r.sendAppend(id)
+					}
+				}
+			}
+		}
 	case pb.MessageType_MsgHeartbeatResponse:
-
+		if progress.Match < r.RaftLog.LastIndex() {
+			r.sendAppend(m.From)
+		}
 	case pb.MessageType_MsgTransferLeader:
 	}
 	return nil
@@ -602,4 +651,16 @@ func (r *Raft) addNode(id uint64) {
 // removeNode remove a node from raft group
 func (r *Raft) removeNode(id uint64) {
 	// Your Code Here (3A).
+}
+
+func (r *Raft) SoftState() *SoftState {
+	return &SoftState{Lead: r.Lead, RaftState: r.State}
+}
+
+func (r *Raft) HardState() pb.HardState {
+	return pb.HardState{
+		Term:   r.Term,
+		Vote:   r.Vote,
+		Commit: r.RaftLog.committed,
+	}
 }
