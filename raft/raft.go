@@ -175,13 +175,14 @@ func newRaft(c *Config) *Raft {
 		panic(err)
 	}
 
-	raft := new(Raft)
-	raft.RaftLog = raftLog
-	raft.id = c.ID
-	raft.Lead = None
-	raft.Prs = make(map[uint64]*Progress)
-	raft.electionTimeout = c.ElectionTick
-	raft.heartbeatTimeout = c.HeartbeatTick
+	raft := &Raft{
+		id:               c.ID,
+		Lead:             None,
+		RaftLog:          raftLog,
+		Prs:              make(map[uint64]*Progress),
+		electionTimeout:  c.ElectionTick,
+		heartbeatTimeout: c.HeartbeatTick,
+	}
 
 	peers := c.peers
 	if len(confState.Nodes) > 0 {
@@ -195,12 +196,17 @@ func newRaft(c *Config) *Raft {
 	}
 
 	if !IsEmptyHardState(hardState) {
+		if hardState.Commit < raft.RaftLog.committed || hardState.Commit > raft.RaftLog.LastIndex() {
+			panic(errors.New("Invalid hardState"))
+		}
 		raft.Term = hardState.GetTerm()
 		raft.Vote = hardState.GetVote()
 		raft.RaftLog.committed = hardState.GetCommit()
 	}
 
-	raft.RaftLog.applied = c.Applied
+	if c.Applied > 0 {
+		raft.RaftLog.Applied(c.Applied)
+	}
 
 	raft.becomeFollower(raft.Term, None)
 
@@ -279,14 +285,14 @@ func (r *Raft) tick() {
 		r.electionElapsed++
 		if r.heartbeatElapsed >= r.heartbeatTimeout {
 			r.heartbeatElapsed = 0
-			r.Step(pb.Message{From: r.id, MsgType: pb.MessageType_MsgBeat})
+			r.Step(pb.Message{From: r.id, Term: r.Term, MsgType: pb.MessageType_MsgBeat})
 		}
 	} else {
 		r.electionElapsed++
 		if _, ok := r.Prs[r.id]; ok {
 			if r.electionElapsed >= r.randomizedElectionTimeout {
 				r.electionElapsed = 0
-				r.Step(pb.Message{From: r.id, MsgType: pb.MessageType_MsgHup})
+				r.Step(pb.Message{From: r.id, Term: r.Term, MsgType: pb.MessageType_MsgHup})
 			}
 		}
 	}
@@ -404,6 +410,10 @@ func (r *Raft) send(m pb.Message) {
 	r.msgs = append(r.msgs, m)
 }
 
+func (r *Raft) VoteThreshold() int {
+	return len(r.Prs)/2 + 1
+}
+
 func (r *Raft) StepMsgHup() {
 	// entries, err := r.RaftLog.slice(r.RaftLog.applied+1, r.RaftLog.committed+1)
 	// num_Conf := 0
@@ -417,8 +427,6 @@ func (r *Raft) StepMsgHup() {
 	// }
 
 	r.becomeCandidate()
-	voteMsg := pb.MessageType_MsgRequestVote
-	term := r.Term
 	index := r.RaftLog.LastIndex()
 	logTerm, err := r.RaftLog.Term(index)
 	if err != nil {
@@ -429,22 +437,22 @@ func (r *Raft) StepMsgHup() {
 			continue
 		}
 		r.send(pb.Message{
-			Term:    term,
+			Term:    r.Term,
 			To:      id,
-			MsgType: voteMsg,
+			From:    r.id,
+			MsgType: pb.MessageType_MsgRequestVote,
 			Index:   index,
 			LogTerm: logTerm})
 	}
 	votesCount := 0
-	if _, ok := r.votes[r.id]; !ok {
-		r.votes[r.id] = true
-	}
+	r.votes[r.id] = true
+
 	for _, vote := range r.votes {
 		if vote {
 			votesCount++
 		}
 	}
-	if (len(r.votes)+1)/2 <= votesCount {
+	if r.VoteThreshold() <= votesCount {
 		r.becomeLeader()
 	}
 }
@@ -494,7 +502,7 @@ func (r *Raft) LeaderStep(m pb.Message) error {
 					id++
 				}
 				sort.Sort(matchIndexs)
-				max_consist_index := matchIndexs[len(matchIndexs)-((len(r.votes)+1)/2)]
+				max_consist_index := matchIndexs[len(matchIndexs)-r.VoteThreshold()]
 				commitFlag := r.RaftLog.Commit(max_consist_index, r.Term)
 
 				if commitFlag {
@@ -518,8 +526,10 @@ func (r *Raft) LeaderStep(m pb.Message) error {
 
 func (r *Raft) CanditateStep(m pb.Message) error {
 	switch m.MsgType {
+	case pb.MessageType_MsgHup:
+		r.StepMsgHup()
 	case pb.MessageType_MsgPropose:
-		return ErrProposalDropped
+		// return ErrProposalDropped
 	case pb.MessageType_MsgAppend:
 		// When it enters here,m.Term==r.Term
 		// There is a valid leader occur
@@ -532,16 +542,15 @@ func (r *Raft) CanditateStep(m pb.Message) error {
 		r.becomeFollower(m.Term, m.From)
 		r.handleSnapshot(m)
 	case pb.MessageType_MsgRequestVoteResponse:
-		if _, ok := r.votes[m.From]; !ok {
-			r.votes[m.From] = m.Reject
-		}
+		r.votes[m.From] = !m.Reject
 		votesCount := 0
 		for _, vote := range r.votes {
 			if vote {
 				votesCount++
 			}
 		}
-		if votesCount == (len(r.Prs)/2 + 1) {
+		fmt.Println("Candidate gets votes ", votesCount)
+		if votesCount == r.VoteThreshold() {
 			r.becomeLeader()
 			//broadcast
 			for id, _ := range r.Prs {
@@ -550,7 +559,7 @@ func (r *Raft) CanditateStep(m pb.Message) error {
 				}
 				r.sendAppend(id)
 			}
-		} else if votesCount+(len(r.Prs)/2+1) == len(r.votes) {
+		} else if votesCount+r.VoteThreshold() == len(r.votes) {
 			// Election failed,mostly peers rejected this node
 			r.becomeFollower(r.Term, None)
 		}
@@ -565,7 +574,7 @@ func (r *Raft) FollowerStep(m pb.Message) error {
 	case pb.MessageType_MsgHup:
 		r.StepMsgHup()
 	case pb.MessageType_MsgPropose:
-		return ErrProposalDropped
+		// return ErrProposalDropped
 	case pb.MessageType_MsgAppend:
 		if m.Term < r.Term {
 			//Invalid Leader

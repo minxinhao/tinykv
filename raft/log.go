@@ -77,8 +77,9 @@ func newLog(storage Storage) *RaftLog {
 	if storage == nil {
 		panic(errors.New("storage cannot be nil"))
 	}
-	raftLog := new(RaftLog)
-	raftLog.storage = storage
+	raftLog := &RaftLog{
+		storage: storage,
+	}
 
 	firIndex, err := storage.FirstIndex()
 	if err != nil {
@@ -119,7 +120,7 @@ func (l *RaftLog) maybeCompact() {
 // unstableEntries return all the unstable entries
 func (l *RaftLog) unstableEntries() []pb.Entry {
 	// Your Code Here (2A).
-	if int(l.stabled-l.snapLastIndex) > len(l.entries) || l.stabled <= l.snapLastIndex {
+	if int(l.stabled-l.snapLastIndex) > len(l.entries) {
 		return nil
 	}
 
@@ -130,7 +131,7 @@ func (l *RaftLog) unstableEntries() []pb.Entry {
 func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 	// Your Code Here (2A).
 	firIndex := max(l.applied+1, l.FirstIndex())
-	if firIndex >= l.committed+1 || firIndex > l.LastIndex() {
+	if firIndex >= l.committed+1 || firIndex > l.LastIndex() || len(l.entries) == 0 {
 		return nil
 	}
 	return l.entries[firIndex : l.committed+1]
