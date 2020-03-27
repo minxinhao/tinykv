@@ -16,6 +16,7 @@ package raft
 
 import (
 	"errors"
+	"fmt"
 
 	"github.com/pingcap-incubator/tinykv/log"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
@@ -131,10 +132,10 @@ func (l *RaftLog) unstableEntries() []pb.Entry {
 func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 	// Your Code Here (2A).
 	firIndex := max(l.applied+1, l.FirstIndex())
-	if firIndex >= l.committed+1 || firIndex > l.LastIndex() || len(l.entries) == 0 {
+	if firIndex >= l.committed+1 || firIndex < l.FirstIndex() || l.committed > l.LastIndex() || len(l.entries) == 0 {
 		return nil
 	}
-	return l.entries[firIndex : l.committed+1]
+	return l.entries[firIndex-l.snapLastIndex-1 : l.committed+1-l.snapLastIndex-1]
 }
 
 func (l *RaftLog) FirstIndex() uint64 {
@@ -207,11 +208,20 @@ func (l *RaftLog) slice(lo, hi uint64) ([]pb.Entry, error) {
 func (l *RaftLog) matchForTerm(index, term uint64) bool {
 	matchFlag := false
 	if logTerm, err := l.Term(index); err == nil {
+		fmt.Println("matchForTerm Index", index, "logTerm", logTerm, " Term", term)
 		matchFlag = (logTerm == term)
-	} else {
-		matchFlag = false
 	}
 	return matchFlag
+}
+
+func (l *RaftLog) greaterForTerm(index, term uint64) bool {
+	greaterFlag := false
+	if logTerm, err := l.Term(index); err == nil {
+		greaterFlag = (logTerm < term)
+	} else {
+		greaterFlag = false
+	}
+	return greaterFlag
 }
 
 func (l *RaftLog) matchEntries(ents []pb.Entry) uint64 {
@@ -232,9 +242,11 @@ func (l *RaftLog) AppendEntries(ents []pb.Entry) uint64 {
 	}
 	after := ents[0].Index
 	if after == l.LastIndex()+1 {
+		// fmt.Println("Append Entries consectively")
 		l.entries = append(l.entries, ents...)
 		return l.LastIndex()
 	}
+	// fmt.Println("Append Entries replaced prev entries")
 
 	if after-1 < l.stabled {
 		l.stabled = after - 1
@@ -247,6 +259,7 @@ func (l *RaftLog) AppendEntries(ents []pb.Entry) uint64 {
 
 func (l *RaftLog) Append(index, term, committed uint64, entries ...pb.Entry) (last_index uint64, ok bool) {
 	if l.matchForTerm(index, term) {
+		fmt.Println("Append entries with equal term")
 		last_index = index + uint64(len(entries))
 		confilict_index := l.matchEntries(entries)
 		switch {
@@ -261,7 +274,24 @@ func (l *RaftLog) Append(index, term, committed uint64, entries ...pb.Entry) (la
 			l.committed = commit_index
 		}
 		return last_index, true
+	} else if l.greaterForTerm(index, term) {
+		fmt.Println("Append entries with greater term")
+		last_index = index + uint64(len(entries))
+		confilict_index := l.matchEntries(entries)
+		switch {
+		case confilict_index == 0:
+		case confilict_index <= l.committed:
+		default:
+			offset := index + 1
+			l.AppendEntries(entries[confilict_index-offset:])
+		}
+		commit_index := min(committed, last_index)
+		if l.committed < commit_index {
+			l.committed = commit_index
+		}
+		return last_index, false
 	}
+	fmt.Println("Entries with less term can't be appened")
 	return 0, false
 }
 

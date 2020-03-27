@@ -219,7 +219,8 @@ func (r *Raft) sendAppend(to uint64) bool {
 	// Your Code Here (2A).
 	progress := r.Prs[to]
 	message := pb.Message{
-		To: to,
+		To:   to,
+		From: r.id,
 	}
 
 	term, err_term := r.RaftLog.Term(progress.Next - 1)
@@ -227,8 +228,10 @@ func (r *Raft) sendAppend(to uint64) bool {
 	var entries []pb.Entry
 	var err_entries error
 	if progress.Next < r.RaftLog.FirstIndex() {
+		// fmt.Println("sendAppend case 1")
 		entries, err_entries = nil, ErrCompacted
 	} else if progress.Next > r.RaftLog.LastIndex() {
+		// fmt.Println("sendAppend case 2 LastIndex ", r.RaftLog.LastIndex(), " Next ", progress.Next)
 		entries, err_entries = nil, nil
 	} else {
 		entries, err_entries = r.RaftLog.entries[progress.Next-r.RaftLog.snapLastIndex-1:], nil
@@ -347,7 +350,34 @@ func (r *Raft) becomeLeader() {
 	r.Lead = r.id
 	r.State = StateLeader
 	r.PendingConfIndex = r.RaftLog.LastIndex()
+	emptyEnt := pb.Entry{Data: nil}
+	r.AppendEntry(emptyEnt)
+}
 
+func (r *Raft) AppendEntry(es ...pb.Entry) {
+	lastIndex := r.RaftLog.LastIndex()
+	for i := range es {
+		es[i].Term = r.Term
+		es[i].Index = lastIndex + 1 + uint64(i)
+	}
+	lastIndex = r.RaftLog.AppendEntries(es)
+	progress := r.Prs[r.id]
+	if progress.Match < lastIndex {
+		progress.Match = lastIndex
+	}
+	if progress.Next < lastIndex+1 {
+		progress.Next = lastIndex + 1
+	}
+
+	matchIndexs := make(uint64Slice, len(r.Prs))
+	index := 0
+	for _, p := range r.Prs {
+		matchIndexs[index] = p.Match
+		index++
+	}
+	sort.Sort(matchIndexs)
+	max_consist_index := matchIndexs[len(matchIndexs)-r.VoteThreshold()]
+	r.RaftLog.Commit(max_consist_index, r.Term)
 }
 
 // Step the entrance of handle message, see `MessageType`
@@ -432,6 +462,7 @@ func (r *Raft) StepMsgHup() {
 	if err != nil {
 		panic(err)
 	}
+
 	for id := range r.Prs {
 		if id == r.id {
 			continue
@@ -446,7 +477,6 @@ func (r *Raft) StepMsgHup() {
 	}
 	votesCount := 0
 	r.votes[r.id] = true
-
 	for _, vote := range r.votes {
 		if vote {
 			votesCount++
@@ -471,7 +501,27 @@ func (r *Raft) LeaderStep(m pb.Message) error {
 			r.sendHeartbeat(id)
 		}
 	case pb.MessageType_MsgPropose:
+		// fmt.Println("Leader step MessageType_MsgPropose")
+		if len(m.Entries) == 0 {
+			panic("Invalid propose message with empty entries")
+		}
+		if _, ok := r.Prs[r.id]; !ok {
+			return ErrProposalDropped
+		}
 
+		entries := make([]pb.Entry, 0, len(m.Entries))
+		for _, entry := range m.Entries {
+			entries = append(entries, *entry)
+		}
+
+		r.AppendEntry(entries...)
+		for id, _ := range r.Prs {
+			if id == r.id {
+				continue
+			}
+			r.sendAppend(id)
+		}
+		return nil
 	case pb.MessageType_MsgAppendResponse:
 		if m.Reject {
 			rejectFlag := true
@@ -504,6 +554,7 @@ func (r *Raft) LeaderStep(m pb.Message) error {
 				sort.Sort(matchIndexs)
 				max_consist_index := matchIndexs[len(matchIndexs)-r.VoteThreshold()]
 				commitFlag := r.RaftLog.Commit(max_consist_index, r.Term)
+				// fmt.Println("max_consist_index ", max_consist_index, " matchIndex ", matchIndexs)
 
 				if commitFlag {
 					for id, _ := range r.Prs {
@@ -549,7 +600,7 @@ func (r *Raft) CanditateStep(m pb.Message) error {
 				votesCount++
 			}
 		}
-		fmt.Println("Candidate gets votes ", votesCount)
+		// fmt.Println("Candidate gets votes ", votesCount)
 		if votesCount == r.VoteThreshold() {
 			r.becomeLeader()
 			//broadcast
@@ -627,6 +678,7 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	for _, ent := range m.Entries {
 		entries = append(entries, *ent)
 	}
+	fmt.Println("handleAppendEntries Index", m.Index, "LogTerm ", m.LogTerm)
 	if lastIndex, ok := r.RaftLog.Append(m.Index, m.LogTerm, m.Commit, entries...); ok {
 		r.send(pb.Message{To: m.From, MsgType: pb.MessageType_MsgAppendResponse, Index: lastIndex})
 	} else {

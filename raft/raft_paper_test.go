@@ -375,7 +375,7 @@ func TestLeaderStartReplication2AB(t *testing.T) {
 	li := r.RaftLog.LastIndex()
 
 	ents := []*pb.Entry{{Data: []byte("some data")}}
-	r.Step(pb.Message{From: 1, To: 1, MsgType: pb.MessageType_MsgPropose, Entries: ents})
+	r.Step(pb.Message{From: 1, To: 1, Term: r.Term, MsgType: pb.MessageType_MsgPropose, Entries: ents})
 
 	if g := r.RaftLog.LastIndex(); g != li+1 {
 		t.Errorf("lastIndex = %d, want %d", g, li+1)
@@ -413,7 +413,7 @@ func TestLeaderCommitEntry2AB(t *testing.T) {
 	r.becomeLeader()
 	commitNoopEntry(r, s)
 	li := r.RaftLog.LastIndex()
-	r.Step(pb.Message{From: 1, To: 1, MsgType: pb.MessageType_MsgPropose, Entries: []*pb.Entry{{Data: []byte("some data")}}})
+	r.Step(pb.Message{From: 1, To: 1, MsgType: pb.MessageType_MsgPropose, Term: r.Term, Entries: []*pb.Entry{{Data: []byte("some data")}}})
 
 	for _, m := range r.readMessages() {
 		r.Step(acceptAndReply(m))
@@ -423,6 +423,7 @@ func TestLeaderCommitEntry2AB(t *testing.T) {
 		t.Errorf("committed = %d, want %d", g, li+1)
 	}
 	wents := []pb.Entry{{Index: li + 1, Term: 1, Data: []byte("some data")}}
+
 	if g := r.RaftLog.nextEnts(); !reflect.DeepEqual(g, wents) {
 		t.Errorf("nextEnts = %+v, want %+v", g, wents)
 	}
@@ -467,14 +468,12 @@ func TestLeaderAcknowledgeCommit2AB(t *testing.T) {
 		r.becomeLeader()
 		commitNoopEntry(r, s)
 		li := r.RaftLog.LastIndex()
-		r.Step(pb.Message{From: 1, To: 1, MsgType: pb.MessageType_MsgPropose, Entries: []*pb.Entry{{Data: []byte("some data")}}})
-
+		r.Step(pb.Message{From: 1, To: 1, Term: r.Term, MsgType: pb.MessageType_MsgPropose, Entries: []*pb.Entry{{Data: []byte("some data")}}})
 		for _, m := range r.readMessages() {
 			if tt.acceptors[m.To] {
 				r.Step(acceptAndReply(m))
 			}
 		}
-
 		if g := r.RaftLog.committed > li; g != tt.wack {
 			t.Errorf("#%d: ack commit = %v, want %v", i, g, tt.wack)
 		}
@@ -500,7 +499,7 @@ func TestLeaderCommitPrecedingEntries2AB(t *testing.T) {
 		r.Term = 2
 		r.becomeCandidate()
 		r.becomeLeader()
-		r.Step(pb.Message{From: 1, To: 1, MsgType: pb.MessageType_MsgPropose, Entries: []*pb.Entry{{Data: []byte("some data")}}})
+		r.Step(pb.Message{From: 1, To: 1, Term: r.Term, MsgType: pb.MessageType_MsgPropose, Entries: []*pb.Entry{{Data: []byte("some data")}}})
 
 		for _, m := range r.readMessages() {
 			r.Step(acceptAndReply(m))
@@ -658,14 +657,16 @@ func TestFollowerAppendEntries2AB(t *testing.T) {
 		r := newTestRaft(1, []uint64{1, 2, 3}, 10, 1, storage)
 		r.becomeFollower(2, 2)
 
-		r.Step(pb.Message{From: 2, To: 1, MsgType: pb.MessageType_MsgAppend, Term: 2, LogTerm: tt.term, Index: tt.index, Entries: tt.ents})
+		m := pb.Message{From: 2, To: 1, MsgType: pb.MessageType_MsgAppend, Term: 2, LogTerm: tt.term, Index: tt.index, Entries: tt.ents}
+		fmt.Println("Test Index ", m.Index, "logTerm ", m.LogTerm)
+		r.Step(m)
 
 		wents := make([]pb.Entry, 0, len(tt.wents))
 		for _, ent := range tt.wents {
 			wents = append(wents, *ent)
 		}
 		if g := r.RaftLog.entries; !reflect.DeepEqual(g, wents) {
-			t.Errorf("#%d: ents = %+v, want %+v", i, g, wents)
+			t.Errorf("\n#%d: ents = %+v\n want %+v", i, g, wents)
 		}
 		var wunstable []pb.Entry
 		if tt.wunstable != nil {
