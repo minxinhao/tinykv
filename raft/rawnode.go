@@ -107,6 +107,7 @@ func (rn *RawNode) Propose(data []byte) error {
 	ent := pb.Entry{Data: data}
 	return rn.Raft.Step(pb.Message{
 		MsgType: pb.MessageType_MsgPropose,
+		Term:    rn.Raft.Term,
 		From:    rn.Raft.id,
 		Entries: []*pb.Entry{&ent}})
 }

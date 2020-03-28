@@ -16,7 +16,6 @@ package raft
 
 import (
 	"errors"
-	"fmt"
 
 	"github.com/pingcap-incubator/tinykv/log"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
@@ -208,7 +207,6 @@ func (l *RaftLog) slice(lo, hi uint64) ([]pb.Entry, error) {
 func (l *RaftLog) matchForTerm(index, term uint64) bool {
 	matchFlag := false
 	if logTerm, err := l.Term(index); err == nil {
-		fmt.Println("matchForTerm Index", index, "logTerm", logTerm, " Term", term)
 		matchFlag = (logTerm == term)
 	}
 	return matchFlag
@@ -251,7 +249,7 @@ func (l *RaftLog) AppendEntries(ents []pb.Entry) uint64 {
 	if after-1 < l.stabled {
 		l.stabled = after - 1
 	}
-	l.entries = append([]pb.Entry{}, l.entries[:after-l.snapLastIndex]...)
+	l.entries = append([]pb.Entry{}, l.entries[:after-l.snapLastIndex-1]...)
 	l.entries = append(l.entries, ents...)
 	l.maybeCompact()
 	return l.LastIndex()
@@ -259,11 +257,12 @@ func (l *RaftLog) AppendEntries(ents []pb.Entry) uint64 {
 
 func (l *RaftLog) Append(index, term, committed uint64, entries ...pb.Entry) (last_index uint64, ok bool) {
 	if l.matchForTerm(index, term) {
-		fmt.Println("Append entries with equal term")
 		last_index = index + uint64(len(entries))
 		confilict_index := l.matchEntries(entries)
+		// fmt.Println("confilict_index ", confilict_index, " l.committed ", l.committed)
 		switch {
 		case confilict_index == 0:
+
 		case confilict_index <= l.committed:
 		default:
 			offset := index + 1
@@ -274,24 +273,7 @@ func (l *RaftLog) Append(index, term, committed uint64, entries ...pb.Entry) (la
 			l.committed = commit_index
 		}
 		return last_index, true
-	} else if l.greaterForTerm(index, term) {
-		fmt.Println("Append entries with greater term")
-		last_index = index + uint64(len(entries))
-		confilict_index := l.matchEntries(entries)
-		switch {
-		case confilict_index == 0:
-		case confilict_index <= l.committed:
-		default:
-			offset := index + 1
-			l.AppendEntries(entries[confilict_index-offset:])
-		}
-		commit_index := min(committed, last_index)
-		if l.committed < commit_index {
-			l.committed = commit_index
-		}
-		return last_index, false
 	}
-	fmt.Println("Entries with less term can't be appened")
 	return 0, false
 }
 

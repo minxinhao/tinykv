@@ -658,7 +658,7 @@ func TestFollowerAppendEntries2AB(t *testing.T) {
 		r.becomeFollower(2, 2)
 
 		m := pb.Message{From: 2, To: 1, MsgType: pb.MessageType_MsgAppend, Term: 2, LogTerm: tt.term, Index: tt.index, Entries: tt.ents}
-		fmt.Println("Test Index ", m.Index, "logTerm ", m.LogTerm)
+		// fmt.Println("Test Index ", m.Index, "logTerm ", m.LogTerm)
 		r.Step(m)
 
 		wents := make([]pb.Entry, 0, len(tt.wents))
@@ -747,7 +747,7 @@ func TestLeaderSyncFollowerLog2AB(t *testing.T) {
 		// The second may have more up-to-date log than the first one, so the
 		// first node needs the vote from the third node to become the leader.
 		n := newNetwork(lead, follower, nopStepper)
-		n.send(pb.Message{From: 1, To: 1, MsgType: pb.MessageType_MsgHup})
+		n.send(pb.Message{From: 1, To: 1, Term: term, MsgType: pb.MessageType_MsgHup})
 		// The election occurs in the term after the one we loaded with
 		// lead's term and commited index setted up above.
 		n.send(pb.Message{From: 3, To: 1, MsgType: pb.MessageType_MsgRequestVoteResponse, Term: term + 1})
@@ -836,7 +836,7 @@ func TestVoter2AA(t *testing.T) {
 		storage := NewMemoryStorage()
 		storage.Append(tt.ents)
 		r := newTestRaft(1, []uint64{1, 2}, 10, 1, storage)
-
+		// fmt.Println(r.RaftLog)
 		r.Step(pb.Message{From: 2, To: 1, MsgType: pb.MessageType_MsgRequestVote, Term: 3, LogTerm: tt.logterm, Index: tt.index})
 
 		msgs := r.readMessages()

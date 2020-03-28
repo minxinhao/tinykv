@@ -60,6 +60,8 @@ When start a new raft, get the last stabled state from `Storage` to initialize `
 
 
 
+
+
 ### Problem
 
 ```go

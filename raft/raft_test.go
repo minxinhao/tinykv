@@ -53,7 +53,7 @@ func TestProgressLeader2AB(t *testing.T) {
 	r.becomeLeader()
 
 	// Send proposals to r1. The first 5 entries should be appended to the log.
-	propMsg := pb.Message{From: 1, To: 1, MsgType: pb.MessageType_MsgPropose, Entries: []*pb.Entry{{Data: []byte("foo")}}}
+	propMsg := pb.Message{From: 1, To: 1, Term: r.Term, MsgType: pb.MessageType_MsgPropose, Entries: []*pb.Entry{{Data: []byte("foo")}}}
 	for i := 0; i < 5; i++ {
 		if pr := r.Prs[r.id]; pr.Match != uint64(i+1) || pr.Next != pr.Match+1 {
 			t.Errorf("unexpected progress %v", pr)
@@ -105,7 +105,7 @@ func TestLeaderCycle2AA(t *testing.T) {
 	var cfg func(*Config)
 	n := newNetworkWithConfig(cfg, nil, nil, nil)
 	for campaignerID := uint64(1); campaignerID <= 3; campaignerID++ {
-		n.send(pb.Message{From: campaignerID, To: campaignerID, MsgType: pb.MessageType_MsgHup})
+		n.send(pb.Message{From: campaignerID, To: campaignerID, Term: n.peers[campaignerID].(*Raft).Term, MsgType: pb.MessageType_MsgHup})
 
 		for _, peer := range n.peers {
 			sm := peer.(*Raft)
@@ -151,7 +151,7 @@ func TestLeaderElectionOverwriteNewerLogs2AB(t *testing.T) {
 	// Node 1 campaigns. The election fails because a quorum of nodes
 	// know about the election that already happened at term 2. Node 1's
 	// term is pushed ahead to 2.
-	n.send(pb.Message{From: 1, To: 1, MsgType: pb.MessageType_MsgHup})
+	n.send(pb.Message{From: 1, To: 1, MsgType: pb.MessageType_MsgHup, Term: n.peers[1].(*Raft).Term})
 	sm1 := n.peers[1].(*Raft)
 	if sm1.State != StateFollower {
 		t.Errorf("state = %s, want StateFollower", sm1.State)
@@ -161,7 +161,7 @@ func TestLeaderElectionOverwriteNewerLogs2AB(t *testing.T) {
 	}
 
 	// Node 1 campaigns again with a higher term. This time it succeeds.
-	n.send(pb.Message{From: 1, To: 1, MsgType: pb.MessageType_MsgHup})
+	n.send(pb.Message{From: 1, To: 1, MsgType: pb.MessageType_MsgHup, Term: n.peers[1].(*Raft).Term})
 	if sm1.State != StateLeader {
 		t.Errorf("state = %s, want StateLeader", sm1.State)
 	}
@@ -270,9 +270,10 @@ func TestLogReplication2AB(t *testing.T) {
 	}
 
 	for i, tt := range tests {
-		tt.send(pb.Message{From: 1, To: 1, MsgType: pb.MessageType_MsgHup})
+		tt.send(pb.Message{From: 1, To: 1, MsgType: pb.MessageType_MsgHup, Term: tt.network.peers[1].(*Raft).Term})
 
 		for _, m := range tt.msgs {
+			m.Term = tt.network.peers[1].(*Raft).Term
 			tt.send(m)
 		}
 
@@ -306,9 +307,9 @@ func TestLogReplication2AB(t *testing.T) {
 
 func TestSingleNodeCommit2AB(t *testing.T) {
 	tt := newNetwork(nil)
-	tt.send(pb.Message{From: 1, To: 1, MsgType: pb.MessageType_MsgHup})
-	tt.send(pb.Message{From: 1, To: 1, MsgType: pb.MessageType_MsgPropose, Entries: []*pb.Entry{{Data: []byte("some data")}}})
-	tt.send(pb.Message{From: 1, To: 1, MsgType: pb.MessageType_MsgPropose, Entries: []*pb.Entry{{Data: []byte("some data")}}})
+	tt.send(pb.Message{From: 1, To: 1, Term: tt.peers[1].(*Raft).Term, MsgType: pb.MessageType_MsgHup})
+	tt.send(pb.Message{From: 1, To: 1, Term: tt.peers[1].(*Raft).Term, MsgType: pb.MessageType_MsgPropose, Entries: []*pb.Entry{{Data: []byte("some data")}}})
+	tt.send(pb.Message{From: 1, To: 1, Term: tt.peers[1].(*Raft).Term, MsgType: pb.MessageType_MsgPropose, Entries: []*pb.Entry{{Data: []byte("some data")}}})
 
 	sm := tt.peers[1].(*Raft)
 	if sm.RaftLog.committed != 3 {
@@ -320,15 +321,15 @@ func TestSingleNodeCommit2AB(t *testing.T) {
 // when leader changes with noop entry and no new proposal comes in.
 func TestCommitWithoutNewTermEntry2AB(t *testing.T) {
 	tt := newNetwork(nil, nil, nil, nil, nil)
-	tt.send(pb.Message{From: 1, To: 1, MsgType: pb.MessageType_MsgHup})
+	tt.send(pb.Message{From: 1, To: 1, Term: tt.peers[1].(*Raft).Term, MsgType: pb.MessageType_MsgHup})
 
 	// 0 cannot reach 2,3,4
 	tt.cut(1, 3)
 	tt.cut(1, 4)
 	tt.cut(1, 5)
 
-	tt.send(pb.Message{From: 1, To: 1, MsgType: pb.MessageType_MsgPropose, Entries: []*pb.Entry{{Data: []byte("some data")}}})
-	tt.send(pb.Message{From: 1, To: 1, MsgType: pb.MessageType_MsgPropose, Entries: []*pb.Entry{{Data: []byte("some data")}}})
+	tt.send(pb.Message{From: 1, To: 1, Term: tt.peers[1].(*Raft).Term, MsgType: pb.MessageType_MsgPropose, Entries: []*pb.Entry{{Data: []byte("some data")}}})
+	tt.send(pb.Message{From: 1, To: 1, Term: tt.peers[1].(*Raft).Term, MsgType: pb.MessageType_MsgPropose, Entries: []*pb.Entry{{Data: []byte("some data")}}})
 
 	sm := tt.peers[1].(*Raft)
 	if sm.RaftLog.committed != 1 {
@@ -341,7 +342,7 @@ func TestCommitWithoutNewTermEntry2AB(t *testing.T) {
 	// elect 2 as the new leader with term 2
 	// after append a ChangeTerm entry from the current term, all entries
 	// should be committed
-	tt.send(pb.Message{From: 2, To: 2, MsgType: pb.MessageType_MsgHup})
+	tt.send(pb.Message{From: 2, To: 2, Term: tt.peers[1].(*Raft).Term, MsgType: pb.MessageType_MsgHup})
 
 	if sm.RaftLog.committed != 4 {
 		t.Errorf("committed = %d, want %d", sm.RaftLog.committed, 4)
@@ -356,8 +357,8 @@ func TestDuelingCandidates2AB(t *testing.T) {
 	nt := newNetwork(a, b, c)
 	nt.cut(1, 3)
 
-	nt.send(pb.Message{From: 1, To: 1, MsgType: pb.MessageType_MsgHup})
-	nt.send(pb.Message{From: 3, To: 3, MsgType: pb.MessageType_MsgHup})
+	nt.send(pb.Message{From: 1, To: 1, Term: nt.peers[1].(*Raft).Term, MsgType: pb.MessageType_MsgHup})
+	nt.send(pb.Message{From: 3, To: 3, Term: nt.peers[3].(*Raft).Term, MsgType: pb.MessageType_MsgHup})
 
 	// 1 becomes leader since it receives votes from 1 and 2
 	sm := nt.peers[1].(*Raft)
@@ -376,7 +377,7 @@ func TestDuelingCandidates2AB(t *testing.T) {
 	// candidate 3 now increases its term and tries to vote again
 	// we expect it to disrupt the leader 1 since it has a higher term
 	// 3 will be follower again since both 1 and 2 rejects its vote request since 3 does not have a long enough log
-	nt.send(pb.Message{From: 3, To: 3, MsgType: pb.MessageType_MsgHup})
+	nt.send(pb.Message{From: 3, To: 3, Term: nt.peers[3].(*Raft).Term, MsgType: pb.MessageType_MsgHup})
 
 	wlog := newLog(&MemoryStorage{ents: []pb.Entry{{}, {Data: nil, Term: 1, Index: 1}}})
 	wlog.committed = 1
@@ -414,19 +415,19 @@ func TestCandidateConcede2AB(t *testing.T) {
 	tt := newNetwork(nil, nil, nil)
 	tt.isolate(1)
 
-	tt.send(pb.Message{From: 1, To: 1, MsgType: pb.MessageType_MsgHup})
-	tt.send(pb.Message{From: 3, To: 3, MsgType: pb.MessageType_MsgHup})
+	tt.send(pb.Message{From: 1, To: 1, Term: tt.peers[1].(*Raft).Term, MsgType: pb.MessageType_MsgHup})
+	tt.send(pb.Message{From: 3, To: 3, Term: tt.peers[3].(*Raft).Term, MsgType: pb.MessageType_MsgHup})
 
 	// heal the partition
 	tt.recover()
 	// send heartbeat; reset wait
-	tt.send(pb.Message{From: 3, To: 3, MsgType: pb.MessageType_MsgBeat})
+	tt.send(pb.Message{From: 3, To: 3, Term: tt.peers[3].(*Raft).Term, MsgType: pb.MessageType_MsgBeat})
 
 	data := []byte("force follower")
 	// send a proposal to 3 to flush out a MessageType_MsgAppend to 1
-	tt.send(pb.Message{From: 3, To: 3, MsgType: pb.MessageType_MsgPropose, Entries: []*pb.Entry{{Data: data}}})
+	tt.send(pb.Message{From: 3, To: 3, Term: tt.peers[3].(*Raft).Term, MsgType: pb.MessageType_MsgPropose, Entries: []*pb.Entry{{Data: data}}})
 	// send heartbeat; flush out commit
-	tt.send(pb.Message{From: 3, To: 3, MsgType: pb.MessageType_MsgBeat})
+	tt.send(pb.Message{From: 3, To: 3, Term: tt.peers[3].(*Raft).Term, MsgType: pb.MessageType_MsgBeat})
 
 	a := tt.peers[1].(*Raft)
 	if g := a.State; g != StateFollower {
@@ -463,13 +464,13 @@ func TestSingleNodeCandidate2AA(t *testing.T) {
 func TestOldMessages2AB(t *testing.T) {
 	tt := newNetwork(nil, nil, nil)
 	// make 0 leader @ term 3
-	tt.send(pb.Message{From: 1, To: 1, MsgType: pb.MessageType_MsgHup})
-	tt.send(pb.Message{From: 2, To: 2, MsgType: pb.MessageType_MsgHup})
-	tt.send(pb.Message{From: 1, To: 1, MsgType: pb.MessageType_MsgHup})
+	tt.send(pb.Message{From: 1, To: 1, Term: tt.peers[1].(*Raft).Term, MsgType: pb.MessageType_MsgHup})
+	tt.send(pb.Message{From: 2, To: 2, Term: tt.peers[2].(*Raft).Term, MsgType: pb.MessageType_MsgHup})
+	tt.send(pb.Message{From: 1, To: 1, Term: tt.peers[1].(*Raft).Term, MsgType: pb.MessageType_MsgHup})
 	// pretend we're an old leader trying to make progress; this entry is expected to be ignored.
 	tt.send(pb.Message{From: 2, To: 1, MsgType: pb.MessageType_MsgAppend, Term: 2, Entries: []*pb.Entry{{Index: 3, Term: 2}}})
 	// commit a new entry
-	tt.send(pb.Message{From: 1, To: 1, MsgType: pb.MessageType_MsgPropose, Entries: []*pb.Entry{{Data: []byte("somedata")}}})
+	tt.send(pb.Message{From: 1, To: 1, Term: tt.peers[1].(*Raft).Term, MsgType: pb.MessageType_MsgPropose, Entries: []*pb.Entry{{Data: []byte("somedata")}}})
 
 	ilog := newLog(
 		&MemoryStorage{
@@ -509,8 +510,8 @@ func TestProposal2AB(t *testing.T) {
 		data := []byte("somedata")
 
 		// promote 1 to become leader
-		tt.send(pb.Message{From: 1, To: 1, MsgType: pb.MessageType_MsgHup})
-		tt.send(pb.Message{From: 1, To: 1, MsgType: pb.MessageType_MsgPropose, Entries: []*pb.Entry{{Data: data}}})
+		tt.send(pb.Message{From: 1, To: 1, Term: tt.peers[1].(*Raft).Term, MsgType: pb.MessageType_MsgHup})
+		tt.send(pb.Message{From: 1, To: 1, Term: tt.peers[1].(*Raft).Term, MsgType: pb.MessageType_MsgPropose, Entries: []*pb.Entry{{Data: data}}})
 
 		wantLog := newLog(NewMemoryStorage())
 		if tt.success {
@@ -683,7 +684,6 @@ func TestRecvMessageType_MsgRequestVote2AA(t *testing.T) {
 		term := max(lterm, tt.logTerm)
 		sm.Term = term
 		sm.Step(pb.Message{MsgType: msgType, Term: term, From: 2, Index: tt.index, LogTerm: tt.logTerm})
-
 		msgs := sm.readMessages()
 		if g := len(msgs); g != 1 {
 			t.Fatalf("#%d: len(msgs) = %d, want 1", i, g)
@@ -727,6 +727,10 @@ func TestAllServerStepdown2AB(t *testing.T) {
 		}
 
 		for j, msgType := range tmsgTypes {
+			// if msgType == pb.MessageType_MsgAppend {
+			// 	tterm = uint64(4)
+			// }
+
 			sm.Step(pb.Message{From: 2, MsgType: msgType, Term: tterm, LogTerm: tterm})
 
 			if sm.State != tt.wstate {
@@ -746,7 +750,7 @@ func TestAllServerStepdown2AB(t *testing.T) {
 				wlead = None
 			}
 			if sm.Lead != wlead {
-				t.Errorf("#%d, sm.Lead = %d, want %d", i, sm.Lead, None)
+				t.Errorf("#%d.%d, sm.Lead = %d, want %d", i, j, sm.Lead, None)
 			}
 		}
 	}
@@ -770,7 +774,7 @@ func testCandidateResetTerm(t *testing.T, mt pb.MessageType) {
 
 	nt := newNetwork(a, b, c)
 
-	nt.send(pb.Message{From: 1, To: 1, MsgType: pb.MessageType_MsgHup})
+	nt.send(pb.Message{From: 1, To: 1, Term: nt.peers[1].(*Raft).Term, MsgType: pb.MessageType_MsgHup})
 	if a.State != StateLeader {
 		t.Errorf("state = %s, want %s", a.State, StateLeader)
 	}
@@ -784,8 +788,8 @@ func testCandidateResetTerm(t *testing.T, mt pb.MessageType) {
 	// isolate 3 and increase term in rest
 	nt.isolate(3)
 
-	nt.send(pb.Message{From: 2, To: 2, MsgType: pb.MessageType_MsgHup})
-	nt.send(pb.Message{From: 1, To: 1, MsgType: pb.MessageType_MsgHup})
+	nt.send(pb.Message{From: 2, To: 2, Term: nt.peers[2].(*Raft).Term, MsgType: pb.MessageType_MsgHup})
+	nt.send(pb.Message{From: 1, To: 1, Term: nt.peers[1].(*Raft).Term, MsgType: pb.MessageType_MsgHup})
 
 	if a.State != StateLeader {
 		t.Errorf("state = %s, want %s", a.State, StateLeader)
@@ -830,7 +834,7 @@ func TestDisruptiveFollower2AA(t *testing.T) {
 
 	nt := newNetwork(n1, n2, n3)
 
-	nt.send(pb.Message{From: 1, To: 1, MsgType: pb.MessageType_MsgHup})
+	nt.send(pb.Message{From: 1, To: 1, Term: nt.peers[1].(*Raft).Term, MsgType: pb.MessageType_MsgHup})
 
 	// check state
 	// n1.State == StateLeader
@@ -925,14 +929,14 @@ func TestBcastBeat2AB(t *testing.T) {
 
 	sm.becomeCandidate()
 	sm.becomeLeader()
-	sm.Step(pb.Message{MsgType: pb.MessageType_MsgPropose, Entries: []*pb.Entry{{}}})
+	sm.Step(pb.Message{MsgType: pb.MessageType_MsgPropose, Term: sm.Term, Entries: []*pb.Entry{{}}})
 	sm.readMessages() // clear message
 	// slow follower
 	sm.Prs[2].Match, sm.Prs[2].Next = 5, 6
 	// normal follower
 	sm.Prs[3].Match, sm.Prs[3].Next = sm.RaftLog.LastIndex(), sm.RaftLog.LastIndex()+1
 
-	sm.Step(pb.Message{MsgType: pb.MessageType_MsgBeat})
+	sm.Step(pb.Message{MsgType: pb.MessageType_MsgBeat, Term: sm.Term})
 	msgs := sm.readMessages()
 	if len(msgs) != 2 {
 		t.Fatalf("len(msgs) = %v, want 2", len(msgs))
@@ -982,7 +986,7 @@ func TestRecvMessageType_MsgBeat2AA(t *testing.T) {
 		sm.RaftLog = newLog(&MemoryStorage{ents: []pb.Entry{{}, {Index: 1, Term: 0}, {Index: 2, Term: 1}}})
 		sm.Term = 1
 		sm.State = tt.state
-		sm.Step(pb.Message{From: 1, To: 1, MsgType: pb.MessageType_MsgBeat})
+		sm.Step(pb.Message{From: 1, To: 1, Term: sm.Term, MsgType: pb.MessageType_MsgBeat})
 
 		msgs := sm.readMessages()
 		if len(msgs) != tt.wMsg {
@@ -1005,9 +1009,9 @@ func TestLeaderIncreaseNext2AB(t *testing.T) {
 	storage.Append(previousEnts)
 	sm := newTestRaft(1, []uint64{1, 2}, 10, 1, storage)
 	nt := newNetwork(sm, nil, nil)
-	nt.send(pb.Message{From: 1, To: 1, MsgType: pb.MessageType_MsgHup})
+	nt.send(pb.Message{From: 1, To: 1, Term: nt.peers[1].(*Raft).Term, MsgType: pb.MessageType_MsgHup})
 
-	nt.send(pb.Message{From: 1, To: 1, MsgType: pb.MessageType_MsgPropose, Entries: []*pb.Entry{{Data: []byte("somedata")}}})
+	nt.send(pb.Message{From: 1, To: 1, Term: nt.peers[1].(*Raft).Term, MsgType: pb.MessageType_MsgPropose, Entries: []*pb.Entry{{Data: []byte("somedata")}}})
 
 	p := sm.Prs[2]
 	if p.Next != wnext {
@@ -1471,13 +1475,13 @@ func TestSplitVote2AA(t *testing.T) {
 	n3.becomeFollower(1, None)
 
 	nt := newNetwork(n1, n2, n3)
-	nt.send(pb.Message{From: 1, To: 1, MsgType: pb.MessageType_MsgHup})
+	nt.send(pb.Message{From: 1, To: 1, Term: nt.peers[1].(*Raft).Term, MsgType: pb.MessageType_MsgHup})
 
 	// simulate leader down. followers start split vote.
 	nt.isolate(1)
 	nt.send([]pb.Message{
-		{From: 2, To: 2, MsgType: pb.MessageType_MsgHup},
-		{From: 3, To: 3, MsgType: pb.MessageType_MsgHup},
+		{From: 2, To: 2, Term: nt.peers[2].(*Raft).Term, MsgType: pb.MessageType_MsgHup},
+		{From: 3, To: 3, Term: nt.peers[3].(*Raft).Term, MsgType: pb.MessageType_MsgHup},
 	}...)
 
 	// check whether the term values are expected
@@ -1505,7 +1509,7 @@ func TestSplitVote2AA(t *testing.T) {
 	}
 
 	// node 2 election timeout first
-	nt.send(pb.Message{From: 2, To: 2, MsgType: pb.MessageType_MsgHup})
+	nt.send(pb.Message{From: 2, To: 2, Term: nt.peers[2].(*Raft).Term, MsgType: pb.MessageType_MsgHup})
 
 	// check whether the term values are expected
 	// n2.Term == 4

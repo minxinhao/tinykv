@@ -389,6 +389,9 @@ func (r *Raft) Step(m pb.Message) error {
 	if m.Term < r.Term {
 		return nil
 	}
+	if m.Term == r.Term && m.MsgType == pb.MessageType_MsgAppend && r.Vote == m.From {
+		r.Lead = m.From
+	}
 	// if m.Term > r.Term && r.Lead == None {
 	if m.Term > r.Term {
 		if m.MsgType == pb.MessageType_MsgAppend || m.MsgType == pb.MessageType_MsgHeartbeat || m.MsgType == pb.MessageType_MsgSnapshot {
@@ -397,7 +400,6 @@ func (r *Raft) Step(m pb.Message) error {
 			r.becomeFollower(m.Term, None)
 		}
 	}
-
 	switch r.State {
 	case StateFollower:
 		if err := r.FollowerStep(m); err != nil {
@@ -489,7 +491,7 @@ func (r *Raft) StepMsgHup() {
 
 func (r *Raft) LeaderStep(m pb.Message) error {
 	progress := r.Prs[m.From]
-	if progress == nil && m.MsgType != pb.MessageType_MsgBeat && m.MsgType != pb.MessageType_MsgPropose {
+	if progress == nil && m.MsgType != pb.MessageType_MsgBeat && m.MsgType != pb.MessageType_MsgPropose && m.MsgType != pb.MessageType_MsgRequestVote {
 		return nil
 	}
 	switch m.MsgType {
@@ -566,6 +568,8 @@ func (r *Raft) LeaderStep(m pb.Message) error {
 				}
 			}
 		}
+	case pb.MessageType_MsgRequestVote:
+		r.send(pb.Message{To: m.From, Term: r.Term, MsgType: pb.MessageType_MsgRequestVoteResponse, Reject: true})
 	case pb.MessageType_MsgHeartbeatResponse:
 		if progress.Match < r.RaftLog.LastIndex() {
 			r.sendAppend(m.From)
@@ -592,6 +596,8 @@ func (r *Raft) CanditateStep(m pb.Message) error {
 	case pb.MessageType_MsgSnapshot:
 		r.becomeFollower(m.Term, m.From)
 		r.handleSnapshot(m)
+	case pb.MessageType_MsgRequestVote:
+		r.send(pb.Message{To: m.From, Term: r.Term, MsgType: pb.MessageType_MsgRequestVoteResponse, Reject: true})
 	case pb.MessageType_MsgRequestVoteResponse:
 		r.votes[m.From] = !m.Reject
 		votesCount := 0
@@ -643,8 +649,8 @@ func (r *Raft) FollowerStep(m pb.Message) error {
 		r.handleSnapshot(m)
 	case pb.MessageType_MsgRequestVote:
 		voteFlag := (r.Vote == None && r.Lead == None) || (r.Vote == m.From)
-		updateFlag := (m.Term > r.RaftLog.LastTerm() ||
-			(m.Term == r.RaftLog.LastTerm() && m.Index >= r.RaftLog.LastIndex()))
+		updateFlag := (m.LogTerm > r.RaftLog.LastTerm()) ||
+			(m.LogTerm == r.RaftLog.LastTerm() && m.Index >= r.RaftLog.LastIndex())
 		if voteFlag && updateFlag {
 			r.electionElapsed = 0
 			r.Vote = m.From
@@ -678,7 +684,7 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	for _, ent := range m.Entries {
 		entries = append(entries, *ent)
 	}
-	fmt.Println("handleAppendEntries Index", m.Index, "LogTerm ", m.LogTerm)
+	// fmt.Println("handleAppendEntries Index", m.Index, "LogTerm ", m.LogTerm)
 	if lastIndex, ok := r.RaftLog.Append(m.Index, m.LogTerm, m.Commit, entries...); ok {
 		r.send(pb.Message{To: m.From, MsgType: pb.MessageType_MsgAppendResponse, Index: lastIndex})
 	} else {
