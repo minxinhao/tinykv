@@ -62,62 +62,47 @@ When start a new raft, get the last stabled state from `Storage` to initialize `
 
 
 
-### Problem
+### Notes
 
-```go
-// RaftLog manage the log entries, its struct look like:
-//
-//  truncated.....first.....applied....committed....stabled.....last
-//  ---------------------------------------------------------------|
-//  snapshot |consective|           log entries
-//
-type RaftLog struct{
-  //...
-  // log entries with index <= stabled are stabled to storage
-	// Not very understanding the meaning of stable here
-  // What is the relationship between stabled and commited?
-  // I thought snapshot was only aimed at logs that were already commited.
-	stabled uint64
+#### RaftLog
 
-}
+1. truncated就是snapshot，snapshot和first始终保证是连续的。 
+2. pendingSnapshot用于接受从Leader发送过来的snapshot，和当前的entris的可能连续或者重合
+3. Lab2a中不需要处理与snapshot以及压缩相关的内容(即将first-applied中的数据整合到snapshot中去)
+4. hint
+   1. 需要记录snapshot的最大index和对应的term。
+   2. entry的index不是在entries中的位置。访问entries的数据使用index-lastSnapIndex来访问
+   3. entries可能为空
+   4. 需要额外实现的RaftLog对象的方法
+      1. FirstIndex() 返回entries中第一个entry的Index
+      2. LastTerm() 返回entries中最后一个entry的Term
+      3. slice(s,e) 返回entries中从s，e的切片
+      4. Append(index, term, committed uint64, entries ...pb.Entry) 用于实现AppendRPC，根据index、term的匹配情况，将entries放入到当前entries的合适位置
+      5. Commit(index, term uint64)、Stabled(index, term uint64)、Applied(index uint64)根据index和term的匹配情况来更新committed、stabled和applied
 
-type Storage interface {
-  // ...
+### Raft
 
-	// Untruntated logs
-  Entries(lo, hi uint64) ([]pb.Entry, error)
-	
-  // Logs before firstIndex have been merged into the previous snapshot
-	// so those logs can be considered that they have been commited
-  FirstIndex() (uint64, error)
-  
-  //corresponding to raftLog's stabled, because all logs on the storage have been persisted
-  LastIndex() (uint64, error)
-  
-	// Snapshot returns the most recent snapshot.
-  Snapshot() (pb.Snapshot, error)
-}
-
-// I think here should be some more tips for the conversion of storage and RaftLog
-// mainly for the descriptions of firstIndex and LastIndex of storage can be associated with RaftLog.
-func newLog(storage Storage) *RaftLog {
-   // Your Code Here (2A).
-   return nil
-}
-
-// It is recommended to add this function definition
-func (l *RaftLog) FirstIndex() uint64 {
-	return l.entries[0].Index
-}
-
-// It is recommended to put this function in front
-func (l *RaftLog) LastIndex() uint64 {
-	// Your Code Here (2A).
-	return l.entries[len(l.entries)-1].Index
-}
-
-```
-
-Personal suggestions to the order of implement:
-1. First to implement RaftLog 
-2. and then to implement Step-related content, i wrote first tick today half stuck
+1. 给的那一本参考论文中部分细节容易忘记或者没有说出
+   1. 成为Leader后需要将一个空entry加入Raftlog的entries中
+   2. 忽略term小于当前term的消息
+   3. 只要append消息的term不小于当前term，当前节点就成为消息发送者的follower
+2. 不需要处理leadTransferee和PendingConfIndex
+3. 使用electionTimeout用来判断heartbeat超时
+4. 对于MessageType_MsgHup、MessageType_MsgBeat、MessageType_MsgPropose在step中需要特殊处理，因为在测试程序中对于这一类消息的Term字段都没有设置值，他们默认是0 。对他们需要无视Term字段。
+5. 注意send函数，它的逻辑我无法理解，但是暂时按他需要的设置term吧。
+6. 目前的实现需要处理除了MessageType_MsgTransferLeader和MessageType_MsgTimeoutNow之外的所有message
+7. message中注意的字段
+   1. Reject AppendRpc和投票RPC的success和voteGranted，代表操作结果。
+   2. RejectHint 不用处理，忽略
+   3. Index、LogTerm  AppendRpc中的prevLogIndex 、prevLogTerm
+   4. Term 发送者的Term 
+> send方法中对term字段做的处理以及local  Message类型让我对term字段有点迷惑。
+8. hint
+   1. 在step函数在最前面对消息的term进行判断，因为这是所有服务器公共的部分
+   2. 建议实现的方法
+      1. reset方法 重置一个raft结构
+      2. 广播操作 用于leader向所有节点发送消息
+      3. VoteThreshold 返回达成一致需要的节点数
+      4. 统计投票 统计获得的选票数
+      5. AppendEntry 向raftlog中添加entries，并更新match、next以及raftlog的commit
+      6. SoftState、HardState 将raft对应的信息封装成对应的SoftState和HardState
