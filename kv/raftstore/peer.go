@@ -10,7 +10,7 @@ import (
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/runner"
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/util"
 	"github.com/pingcap-incubator/tinykv/kv/util/engine_util"
-	"github.com/pingcap-incubator/tinykv/kv/worker"
+	"github.com/pingcap-incubator/tinykv/kv/util/worker"
 	"github.com/pingcap-incubator/tinykv/log"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/metapb"
@@ -342,15 +342,12 @@ func (p *peer) Term() uint64 {
 	return p.RaftGroup.Raft.Term
 }
 
-func (p *peer) HeartbeatPd(pdScheduler chan<- worker.Task) {
-	pdScheduler <- worker.Task{
-		Tp: worker.TaskTypePDHeartbeat,
-		Data: &runner.PdRegionHeartbeatTask{
-			Region:          p.Region(),
-			Peer:            p.Meta,
-			PendingPeers:    p.CollectPendingPeers(),
-			ApproximateSize: p.ApproximateSize,
-		},
+func (p *peer) HeartbeatScheduler(ch chan<- worker.Task) {
+	ch <- &runner.SchedulerRegionHeartbeatTask{
+		Region:          p.Region(),
+		Peer:            p.Meta,
+		PendingPeers:    p.CollectPendingPeers(),
+		ApproximateSize: p.ApproximateSize,
 	}
 }
 
@@ -368,7 +365,7 @@ func (p *peer) sendRaftMessage(msg eraftpb.Message, trans Transport) error {
 	if toPeer == nil {
 		return fmt.Errorf("failed to lookup recipient peer %v in region %v", msg.To, p.regionId)
 	}
-	log.Debugf("%v, send raft msg %v from %v to %v", p.Tag, msg.MsgType, fromPeer.Id, toPeer.Id)
+	log.Debugf("%v, send raft msg %v from %v to %v", p.Tag, msg.MsgType, fromPeer, toPeer)
 
 	sendMsg.FromPeer = &fromPeer
 	sendMsg.ToPeer = toPeer
