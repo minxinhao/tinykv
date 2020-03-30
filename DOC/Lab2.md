@@ -106,3 +106,71 @@ When start a new raft, get the last stabled state from `Storage` to initialize `
       4. 统计投票 统计获得的选票数
       5. AppendEntry 向raftlog中添加entries，并更新match、next以及raftlog的commit
       6. SoftState、HardState 将raft对应的信息封装成对应的SoftState和HardState
+
+
+
+### Part B
+
+In this part you will build a fault-tolerant key-value storage service using the Raft module implemented in part A.  Your key/value service will be a replicated state machine, consisting of several key/value servers that use Raft for replication. Your key/value service should continue to process client requests as long as a majority of the servers are alive and can communicate, in spite of other failures or network partitions. 
+In lab1 you have implemented a standalone kv server, so you should already be familiar with the kv server API and `Storage` interface.  
+Before introducing the code, you need to understand three terms first: `Store`, `Peer` and `Region` which are defined in `proto/proto/metapb.proto`. 
+Store stands for an instance of tinykv-server
+Peer stands for a Raft node which is running on a Store
+Region is a collection of Peers, also called Raft group
+
+Now you can simply think that there would be only one Peer on a Store and one Region in a cluster. They will be further introduced in lab3.
+#### The Code
+First, the code that you should take a look at is  `RaftStorage` located in `kv/storage/raft_storage/raft_server.go` which also implements the `Storage` interface. It mainly creates a `RaftBatchSystem` to drive Raft.  When calling the `Reader` or `Write` function,  it actually sends a raft command defined in `proto/proto/raft_cmdpb.proto` with four basic command types(Get/Put/Delete/Snap) to Raft and returns the response after Raft commits and applies the command.
+Then, here comes the core of TinyKV — raftstore. The structure is a little complicated, you can read the reference of TiKV to give you a better understanding of the design:
+https://pingcap.com/blog-cn/the-design-and-implementation-of-multi-raft/#raftstore  (Chinese Version)
+https://pingcap.com/blog/2017-08-15-multi-raft/#raftstore (English Version)
+TODO: raftstore 各种 worker 之间的关系图 
+The entrance of raftstore is `RaftBatchSystem`, see `kv/raftstore/batch_system.go`.  It starts some workers to handle specific tasks asynchronously,  and most of them aren’t used now so you can just ignore them. All you need to focus on is `raftWorker`.
+The whole process is divided into two parts: raft worker polls `raftCh` to get the messages, the messages includes the base tick to drive Raft module and Raft commands to be proposed as Raft entries; it gets and handles ready from Raft module, including send raft messages, persist the state, apply the committed entries. Once committed, return the response to clients.
+#### Implement peer storage
+Peer storage is what you interact with through the `Storage` interface in part A, but in addition to the raft log and snapshot, peer storage also manages other persisted metadata which is very important to  restore the consistent state machine after restart. Moreover, there are three important state defined in `proto/proto/raft_serverpb.proto`:
+RaftLocalState: Used to store HardState of the current Raft and the last Log Index.
+RaftApplyState: Used to store the last Log index that Raft applies and some truncated Log information.
+RegionLocalState: Used to store Region information and the corresponding Peer state on this Store. Normal indicates that this Peer is normal, Applying means this Peer hasn’t finished the apply snapshot operation and Tombstone shows that this Peer has been removed from Region and cannot join in Raft Group.
+These should be created and updated in `PeerStorage`. When creating PeerStorage, it gets the previous RaftLocalState, RaftApplyState and last_term of this Peer from underlying engine. The value of both RAFT_INIT_LOG_TERM and RAFT_INIT_LOG_INDEX is 5 (as long as it's larger than 1). These will be cached to memory for the subsequent quick access.
+These states are stored in two badger instances: raftdb and kvdb. raftdb stores raft log and `RaftLocalState`; kvdb stores key-value data in different column families, `RegionLocalState` and `RaftApplyState`. The format is as below and some helper functions are provided in `kv/raftstore/meta`, and set them to badger with writebatch.SetMeta()
+
+| Key |  KeyFormat | Value | DB |
+| --- | ---------- | ----- | -- |
+|raft_log_key | 0x01 0x02 region_id 0x01 log_idx | Entry | raft |
+| raft_state_key | 0x01 0x02 region_id 0x02 | RaftLocalState | raft |
+| apply_state_key | 0x01 0x02 region_id 0x03 | RaftApplyState | kv |
+| region_state_key | 0x01 0x03 region_id 0x01 | RegionLocalState | kv |
+
+The code you need to implement in this part is only one function:  `PeerStorage.SaveReadyState`, what this function does is to save the data in `raft.Ready` to badger, including: apply snapshot, append log entries and save the hard state.
+ To apply snapshot, first unmarshal `eraftpb.Snapshot.Data` at `raft.Ready.Snapshot` to `rspb.RaftSnapshotData` which contains the new region meta and along with the `eraftpb.Snapshot.Metadata`, you can now update the peer storage’s memory state like `RaftLocalState`, `RaftApplyState` and `RegionLocalState`, also don’t forget to persist these state to badger and remove stale state from badger. Besides, you also need to update `PeerStorage.snapState` to `snap.SnapState_Applying` and send `runner.RegionTaskApply` task to region worker through `PeerStorage.regionSched` and  wait until region worker finish.
+To append log  entries, simply save all log entries at `raft.Ready.Entries` to badger and delete any previously appended log entries which will never be committed. Also update the peer storage’s `RaftLocalState` and save it to badger.
+To save the hard state is also very easy, just update peer storage’s `RaftLocalState.HardState` and save it to badger.
+Here are some hint on this part:
+Use `WriteBatch` to save these states at once.
+See other functions at `peer_storage.go` for how to read and write these states.
+#### Implement Raft ready process
+In lab2 part A, you have built a tick based Raft module. Now you need to write the outer process to drive it. Most of the code is already implemented under `kv/raftstore/peer_msg_handler.go` and `kv/raftstore/peer.go`.  So you need to learn the code and finish the logic of `proposeRaftCommand` and `HandleRaftReady`. Here are some interpretations of the framework.  
+The Raft `RawNode` is already created with `PeerStorage` and stored in `peer`. In the raft worker, you can see that it takes the `peer` and wraps it by `peerMsgHandler`.  The `peerMsgHandler` mainly has two functions: one is `HandleMsgs` and the other is `HandleRaftReady`.
+`HandleMsgs` processes all the messages received from raftCh, including `MsgTypeTick` which calls `RawNode.Tick()`  to drive the Raft, `MsgTypeRaftCmd` which wraps the request from clients and `MsyTypeRaftMessage` which is the messages transported between Raft peers. All the message types are defined in `kv/raftstore/message/msg.go`. You can check it for detail and some of them will be used in later sections.
+After the message is processed, the Raft node should have some state updates. So `HandleRaftReady` should get the ready from Raft module and do corresponding actions like persisting log entries, applying committed entries and sending raft messages to other peers through the network. 
+Here are some hints for this step:
+`PeerStorage` implements the `Storage` interface of  Raft module, you should use the provided method  `SaveRaftReady()` to persist the Raft related states. 
+Use `WriteBatch` in `engine_util` to make multiple writes atomically, for example, you need to make sure apply the committed entires and update applied index in one write batch. 
+Use `Transport` to send raft messages to other peers, it’s in the `GlobalContext`, 
+The server should not complete a get RPC if it is not part of a majority and do not has up-to-date data. You can just put the get operation into the log, or implement the optimization for read-only operations that is described in Section 8 in the Raft paper. 
+Do not forget to `writeApplyState()` is provided for you to persist apply state
+You can apply the committed Raft log entries in an asynchronous way just like TiKV does. It’s not necessary, though a big challenge to improve performance.
+Record the callback of the command when proposing, and return the callback after applying.
+For the snap command response, should set badger Txn to callback explicitly.
+After this the whole process of a read or write would be like this:
+Clients calls RPC RawGet/RawPut/RawDelete/RawScan
+RPC handler calls `RaftStorage` related method
+`RaftStorage` sends a Raft command request to raftstore, and waits for the response
+`RaftStore` proposes the Raft command request as a Raft log
+Raft module appends the log, and persist by `PeerStorage`
+Raft module commits the log
+Raft worker executes the Raft command when handing Raft ready, and returns the response by callback
+`RaftStorage` receive the response from callback and returns to RPC handler
+RPC handler does some actions and returns the RPC response to clients.
+You should run `make lab2b` to pass all the tests.

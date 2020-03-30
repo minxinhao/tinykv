@@ -3,7 +3,8 @@ package server
 import (
 	"context"
 
-	"github.com/Connor1996/badger"
+	"github.com/pingcap-incubator/tinykv/scheduler/pkg/tsoutil"
+
 	"github.com/pingcap-incubator/tinykv/kv/storage"
 	"github.com/pingcap-incubator/tinykv/kv/storage/raft_storage"
 	"github.com/pingcap-incubator/tinykv/kv/transaction/latches"
@@ -17,7 +18,8 @@ var _ tinykvpb.TinyKvServer = new(Server)
 // Server is a TinyKV server, it 'faces outwards', sending and receiving messages from clients such as TinySQL.
 type Server struct {
 	storage storage.Storage
-	// used in 4A/4B
+
+	// (Used in 4A/4B)
 	Latches *latches.Latches
 }
 
@@ -32,73 +34,23 @@ func NewServer(storage storage.Storage) *Server {
 
 // Raw API.
 func (server *Server) RawGet(_ context.Context, req *kvrpcpb.RawGetRequest) (*kvrpcpb.RawGetResponse, error) {
-	// Your code here (1).
-	rep := new(kvrpcpb.RawGetResponse)
-	reader, err := server.storage.Reader(req.GetContext())
-	if err != nil {
-		rep.Error = err.Error()
-		return rep, nil
-	}
-	val, err := reader.GetCF(req.GetCf(), req.GetKey())
-	if err != nil {
-		if err == badger.ErrKeyNotFound {
-			rep.NotFound = true
-		} else {
-			rep.Error = err.Error()
-		}
-	}
-	rep.Value = val
-	return rep, nil
+	// Your Code Here (1).
+	return nil, nil
 }
 
 func (server *Server) RawPut(_ context.Context, req *kvrpcpb.RawPutRequest) (*kvrpcpb.RawPutResponse, error) {
-	// Your code here (1).
-	rep := new(kvrpcpb.RawPutResponse)
-	modify := []storage.Modify{{
-		Type: storage.ModifyTypePut,
-		Data: storage.Put{
-			Key:   req.Key,
-			Value: req.Value,
-			Cf:    req.Cf}}}
-	err := server.storage.Write(req.GetContext(), modify)
-	return rep, err
+	// Your Code Here (1).
+	return nil, nil
 }
 
 func (server *Server) RawDelete(_ context.Context, req *kvrpcpb.RawDeleteRequest) (*kvrpcpb.RawDeleteResponse, error) {
-	// Your code here (1).
-	rep := new(kvrpcpb.RawDeleteResponse)
-	modify := []storage.Modify{{
-		Type: storage.ModifyTypeDelete,
-		Data: storage.Delete{
-			Key: req.Key,
-			Cf:  req.Cf}}}
-	err := server.storage.Write(req.GetContext(), modify)
-	return rep, err
+	// Your Code Here (1).
+	return nil, nil
 }
 
 func (server *Server) RawScan(_ context.Context, req *kvrpcpb.RawScanRequest) (*kvrpcpb.RawScanResponse, error) {
-	// Your code here (1).
-	rep := new(kvrpcpb.RawScanResponse)
-	reader, err := server.storage.Reader(req.GetContext())
-	iter := reader.IterCF(req.GetCf())
-
-	kvs := rep.GetKvs()
-
-	for iter.Seek(req.GetStartKey()); iter.Valid() && len(kvs) < int(req.Limit); iter.Next() {
-		key := iter.Item().KeyCopy(nil)
-		value, err := iter.Item().ValueCopy(nil)
-		if err != nil {
-			rep.Kvs = kvs
-			return rep, err
-		}
-		kvs = append(kvs, &kvrpcpb.KvPair{
-			Key:   key,
-			Value: value,
-		})
-	}
-	iter.Close()
-	rep.Kvs = kvs
-	return rep, err
+	// Your Code Here (1).
+	return nil, nil
 }
 
 // Raft commands (tinykv <-> tinykv)
@@ -115,41 +67,46 @@ func (server *Server) Snapshot(stream tinykvpb.TinyKv_SnapshotServer) error {
 
 // Transactional API.
 func (server *Server) KvGet(_ context.Context, req *kvrpcpb.GetRequest) (*kvrpcpb.GetResponse, error) {
-	// Your code here (4A).
-	return nil, nil
-}
-
-func (server *Server) KvScan(_ context.Context, req *kvrpcpb.ScanRequest) (*kvrpcpb.ScanResponse, error) {
-	// Your code here (4A).
+	// Your Code Here (4B).
 	return nil, nil
 }
 
 func (server *Server) KvPrewrite(_ context.Context, req *kvrpcpb.PrewriteRequest) (*kvrpcpb.PrewriteResponse, error) {
-	// Your code here (4A).
+	// Your Code Here (4B).
 	return nil, nil
 }
 
 func (server *Server) KvCommit(_ context.Context, req *kvrpcpb.CommitRequest) (*kvrpcpb.CommitResponse, error) {
-	// Your code here (4A).
+	// Your Code Here (4B).
+	return nil, nil
+}
+
+func (server *Server) KvScan(_ context.Context, req *kvrpcpb.ScanRequest) (*kvrpcpb.ScanResponse, error) {
+	// Your Code Here (4C).
 	return nil, nil
 }
 
 func (server *Server) KvCheckTxnStatus(_ context.Context, req *kvrpcpb.CheckTxnStatusRequest) (*kvrpcpb.CheckTxnStatusResponse, error) {
-	// Your code here (4B).
+	// Your Code Here (4C).
 	return nil, nil
 }
 
 func (server *Server) KvBatchRollback(_ context.Context, req *kvrpcpb.BatchRollbackRequest) (*kvrpcpb.BatchRollbackResponse, error) {
-	// Your code here (4B).
+	// Your Code Here (4C).
 	return nil, nil
 }
 
 func (server *Server) KvResolveLock(_ context.Context, req *kvrpcpb.ResolveLockRequest) (*kvrpcpb.ResolveLockResponse, error) {
-	// Your code here (4B).
+	// Your Code Here (4C).
 	return nil, nil
 }
 
 // SQL push down commands.
 func (server *Server) Coprocessor(_ context.Context, req *coprocessor.Request) (*coprocessor.Response, error) {
 	return &coprocessor.Response{}, nil
+}
+
+// PhysicalTime returns the physical time part of the timestamp.
+func PhysicalTime(ts uint64) uint64 {
+	return ts >> tsoutil.PhysicalShiftBits
 }

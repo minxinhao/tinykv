@@ -1,202 +1,83 @@
 package mvcc
 
 import (
-	"bytes"
 	"encoding/binary"
 
 	"github.com/pingcap-incubator/tinykv/kv/storage"
 	"github.com/pingcap-incubator/tinykv/kv/util/codec"
-	"github.com/pingcap-incubator/tinykv/kv/util/engine_util"
 )
 
-// MvccTxn represents an mvcc transaction (see tikv/storage/doc.go for a definition). It permits reading from a snapshot
-// and stores writes in a buffer for atomic writing.
+// MvccTxn groups together writes as part of a single transaction. It also provides an abstraction over low-level
+// storage, lowering the concepts of timestamps, writes, and locks into plain keys and values.
 type MvccTxn struct {
-	RoTxn
-	Writes []storage.Modify
-}
-
-// A 'transaction' which will only read from the DB.
-type RoTxn struct {
+	StartTS uint64
 	Reader  storage.StorageReader
-	StartTS *uint64
+	writes  []storage.Modify
 }
 
-func NewTxn(reader storage.StorageReader) MvccTxn {
-	return MvccTxn{
-		RoTxn: RoTxn{Reader: reader},
-	}
-}
-
-// SeekWrite finds the write with the given key and the most recent timestamp before or equal to ts. If ts is TsMax, then
-// it will find the most recent write for key. It returns a Write from the DB and that write's commit timestamp, or an error.
-// Postcondition: the returned ts is <= the ts arg.
-func (txn *RoTxn) SeekWrite(key []byte, ts uint64) (*Write, uint64, error) {
-	iter := txn.Reader.IterCF(engine_util.CfWrite)
-	iter.Seek(EncodeKey(key, ts))
-	if !iter.Valid() {
-		return nil, 0, nil
-	}
-	item := iter.Item()
-	commitTs := decodeTimestamp(item.Key())
-	if bytes.Compare(DecodeUserKey(item.Key()), key) != 0 {
-		return nil, 0, nil
-	}
-	value, err := item.Value()
-	if err != nil {
-		return nil, 0, err
-	}
-	write, err := ParseWrite(value)
-	if err != nil {
-		return nil, 0, err
-	}
-
-	return write, commitTs, nil
-}
-
-// FindWrite searches for a write at exactly startTs.
-func (txn *RoTxn) FindWrite(key []byte, startTs uint64) (*Write, uint64, error) {
-	seekTs := TsMax
-	for {
-		write, commitTs, err := txn.SeekWrite(key, seekTs)
-		if err != nil {
-			return nil, 0, err
-		}
-		if write == nil {
-			return nil, 0, nil
-		}
-		if write.StartTS == startTs {
-			return write, commitTs, nil
-		}
-		if commitTs <= startTs {
-			return nil, 0, nil
-		}
-		seekTs = commitTs - 1
+func NewMvccTxn(reader storage.StorageReader, startTs uint64) *MvccTxn {
+	return &MvccTxn{
+		Reader:  reader,
+		StartTS: startTs,
 	}
 }
 
-// FindWrittenValue searches for a put write at key and with a timestamp at ts or later, if it finds one, it uses the
-// write's timestamp to look up the value.
-func (txn *RoTxn) FindWrittenValue(key []byte, ts uint64) ([]byte, error) {
-	iter := txn.Reader.IterCF(engine_util.CfWrite)
-	bts := [8]byte{}
-	binary.BigEndian.PutUint64(bts[:], ts)
-	for iter.Seek(EncodeKey(key, ts)); iter.Valid(); iter.Next() {
-		item := iter.Item()
-		// If the user key part of the combined key has changed, then we've got to the next key without finding a put write.
-		if bytes.Compare(DecodeUserKey(item.Key()), key) != 0 {
-			return nil, nil
-		}
-		value, err := item.Value()
-		if err != nil {
-			return nil, err
-		}
-		write, err := ParseWrite(value)
-		if err != nil {
-			return nil, err
-		}
-		switch write.Kind {
-		case WriteKindPut:
-			return txn.Reader.GetCF(engine_util.CfDefault, EncodeKey(key, write.StartTS))
-		case WriteKindDelete:
-			return nil, nil
-		case WriteKindRollback:
-		}
-	}
-
-	// Iterated to the end of the DB
-	return nil, nil
+// Writes returns all changes added to this transaction.
+func (txn *MvccTxn) Writes() []storage.Modify {
+	return txn.writes
 }
 
-// GetWrite gets the write at precisely the given key and ts, without searching.
-func (txn *RoTxn) GetWrite(key []byte, ts uint64) (*Write, error) {
-	value, err := txn.Reader.GetCF(engine_util.CfWrite, EncodeKey(key, ts))
-	if err != nil {
-		return nil, err
-	}
-	return ParseWrite(value)
-}
-
-func (txn *MvccTxn) PutWrite(key []byte, write *Write, ts uint64) {
-	encodedKey := EncodeKey(key, ts)
-	txn.Writes = append(txn.Writes, storage.Modify{
-		Type: storage.ModifyTypePut,
-		Data: storage.Put{
-			Key:   encodedKey,
-			Value: write.ToBytes(),
-			Cf:    engine_util.CfWrite,
-		},
-	})
+// PutWrite records a write at key and ts.
+func (txn *MvccTxn) PutWrite(key []byte, ts uint64, write *Write) {
+	// Your Code Here (4A).
 }
 
 // GetLock returns a lock if key is locked. It will return (nil, nil) if there is no lock on key, and (nil, err)
 // if an error occurs during lookup.
-func (txn *RoTxn) GetLock(key []byte) (*Lock, error) {
-	bytes, err := txn.Reader.GetCF(engine_util.CfLock, key)
-	if err != nil {
-		return nil, err
-	}
-	if bytes == nil {
-		return nil, nil
-	}
-
-	lock, err := ParseLock(bytes)
-	if err != nil {
-		return nil, err
-	}
-
-	return lock, nil
+func (txn *MvccTxn) GetLock(key []byte) (*Lock, error) {
+	// Your Code Here (4A).
+	return nil, nil
 }
 
 // PutLock adds a key/lock to this transaction.
 func (txn *MvccTxn) PutLock(key []byte, lock *Lock) {
-	txn.Writes = append(txn.Writes, storage.Modify{
-		Type: storage.ModifyTypePut,
-		Data: storage.Put{
-			Key:   key,
-			Value: lock.ToBytes(),
-			Cf:    engine_util.CfLock,
-		},
-	})
+	// Your Code Here (4A).
 }
 
 // DeleteLock adds a delete lock to this transaction.
 func (txn *MvccTxn) DeleteLock(key []byte) {
-	txn.Writes = append(txn.Writes, storage.Modify{
-		Type: storage.ModifyTypeDelete,
-		Data: storage.Delete{
-			Key: key,
-			Cf:  engine_util.CfLock,
-		},
-	})
+	// Your Code Here (4A).
 }
 
-// GetValue gets the value at precisely the given key and ts, without searching.
-func (txn *RoTxn) GetValue(key []byte, ts uint64) ([]byte, error) {
-	return txn.Reader.GetCF(engine_util.CfDefault, EncodeKey(key, ts))
+// GetValue finds the value for key, valid at the start timestamp of this transaction.
+// I.e., the most recent value committed before the start of this transaction.
+func (txn *MvccTxn) GetValue(key []byte) ([]byte, error) {
+	// Your Code Here (4A).
+	return nil, nil
 }
 
 // PutValue adds a key/value write to this transaction.
 func (txn *MvccTxn) PutValue(key []byte, value []byte) {
-	txn.Writes = append(txn.Writes, storage.Modify{
-		Type: storage.ModifyTypePut,
-		Data: storage.Put{
-			Key:   EncodeKey(key, *txn.StartTS),
-			Value: value,
-			Cf:    engine_util.CfDefault,
-		},
-	})
+	// Your Code Here (4A).
 }
 
 // DeleteValue removes a key/value pair in this transaction.
 func (txn *MvccTxn) DeleteValue(key []byte) {
-	txn.Writes = append(txn.Writes, storage.Modify{
-		Type: storage.ModifyTypeDelete,
-		Data: storage.Delete{
-			Key: EncodeKey(key, *txn.StartTS),
-			Cf:  engine_util.CfDefault,
-		},
-	})
+	// Your Code Here (4A).
+}
+
+// CurrentWrite searches for a write with this transaction's start timestamp. It returns a Write from the DB and that
+// write's commit timestamp, or an error.
+func (txn *MvccTxn) CurrentWrite(key []byte) (*Write, uint64, error) {
+	// Your Code Here (4A).
+	return nil, 0, nil
+}
+
+// MostRecentWrite finds the most recent write with the given key. It returns a Write from the DB and that
+// write's commit timestamp, or an error.
+func (txn *MvccTxn) MostRecentWrite(key []byte) (*Write, uint64, error) {
+	// Your Code Here (4A).
+	return nil, 0, nil
 }
 
 // EncodeKey encodes a user key and appends an encoded timestamp to a key. Keys and timestamps are encoded so that
