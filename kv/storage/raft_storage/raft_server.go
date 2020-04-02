@@ -152,6 +152,7 @@ func (rs *RaftStorage) Reader(ctx *kvrpcpb.Context) (storage.StorageReader, erro
 	return NewRegionReader(cb.Txn, *resp.Responses[0].GetSnap().Region), nil
 }
 
+// Send given message received from stream through raftRouter
 func (rs *RaftStorage) Raft(stream tinykvpb.TinyKv_RaftServer) error {
 	for {
 		msg, err := stream.Recv()
@@ -162,6 +163,7 @@ func (rs *RaftStorage) Raft(stream tinykvpb.TinyKv_RaftServer) error {
 	}
 }
 
+// Send given SnapshotServer stream through snapWorker
 func (rs *RaftStorage) Snapshot(stream tinykvpb.TinyKv_SnapshotServer) error {
 	var err error
 	done := make(chan struct{})

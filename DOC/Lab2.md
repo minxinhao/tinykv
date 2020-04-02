@@ -174,3 +174,11 @@ Raft worker executes the Raft command when handing Raft ready, and returns the r
 `RaftStorage` receive the response from callback and returns to RPC handler
 RPC handler does some actions and returns the RPC response to clients.
 You should run `make lab2b` to pass all the tests.
+
+### Notes
+
+1. Store stands for an instance of tinykv-server
+> 改成 Store stands for an instance of tinykv-server that stores  keys for a specified range
+2. Now you can simply think that there would be only one Peer on a Store and one Region in a cluster. They will be further introduced in lab3.
+> 没有说过cluster是什么
+3. 对于在raftdb and kvdb中按照文档中给出的格式存储元数据花了一段时间才反应过来。

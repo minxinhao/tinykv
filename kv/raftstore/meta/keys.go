@@ -70,14 +70,17 @@ func RegionRaftPrefixKey(regionID uint64) []byte {
 	return key
 }
 
+// Returns the key for raftLog at index of regionID
 func RaftLogKey(regionID, index uint64) []byte {
 	return makeRegionKey(regionID, RaftLogSuffix, index)
 }
 
+// Returns the key for RaftState of regionID
 func RaftStateKey(regionID uint64) []byte {
 	return makeRegionPrefix(regionID, RaftStateSuffix)
 }
 
+// Returns the key for ApplyState of regionID
 func ApplyStateKey(regionID uint64) []byte {
 	return makeRegionPrefix(regionID, ApplyStateSuffix)
 }
@@ -86,6 +89,7 @@ func IsRaftStateKey(key []byte) bool {
 	return len(key) == 11 && key[0] == LocalPrefix && key[1] == RegionRaftPrefix
 }
 
+// Read the region ID from a key encoded according agreed format
 func DecodeRegionMetaKey(key []byte) (uint64, byte, error) {
 	if len(RegionMetaMinKey)+8+1 != len(key) {
 		return 0, 0, errors.Errorf("invalid region meta key length for key %v", key)
@@ -97,6 +101,8 @@ func DecodeRegionMetaKey(key []byte) (uint64, byte, error) {
 	return regionID, key[len(key)-1], nil
 }
 
+// Return the result of encapsulating the regionID according to the agreed format without specified suffix
+// Other help function can add corresponding suffix to get specifed encapsulated key
 func RegionMetaPrefixKey(regionID uint64) []byte {
 	key := make([]byte, 10)
 	key[0] = LocalPrefix
@@ -105,6 +111,7 @@ func RegionMetaPrefixKey(regionID uint64) []byte {
 	return key
 }
 
+// Return RegionStateKey of the regionID according to the agreed format
 func RegionStateKey(regionID uint64) []byte {
 	key := make([]byte, 11)
 	key[0] = LocalPrefix
