@@ -138,7 +138,8 @@ type Raft struct {
 	// heartbeat interval, should send
 	heartbeatTimeout int
 	// baseline of election interval
-	electionTimeout int
+	electionTimeout           int
+	randomizedElectionTimeout int
 	// number of ticks since it reached last heartbeatTimeout.
 	// only leader keeps heartbeatElapsed.
 	heartbeatElapsed int
@@ -383,7 +384,7 @@ func (r *Raft) Step(m pb.Message) error {
 	// Your Code Here (2A).
 
 	// Rules for all servers
-	if m.Term < r.Term {
+	if m.Term < r.Term && m.MsgType != pb.MessageType_MsgHup && m.MsgType != pb.MessageType_MsgPropose && m.MsgType != pb.MessageType_MsgBeat {
 		return nil
 	}
 	if m.Term == r.Term && m.MsgType == pb.MessageType_MsgAppend && r.Vote == m.From {
