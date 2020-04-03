@@ -39,10 +39,24 @@ func newPeerMsgHandler(peer *peer, ctx *GlobalContext) *peerMsgHandler {
 }
 
 func (d *peerMsgHandler) HandleRaftReady() {
-	if d.stopped {
+	if d.peer.stopped {
 		return
 	}
 	// Your Code Here (2B).
+	applySnapResult := d.peer.HandleRaftReady(d.ctx.schedulerTaskSender, d.ctx.trans)
+	if applySnapResult != nil {
+		prevRegion := applySnapResult.PrevRegion
+		region := applySnapResult.Region
+		meta := d.ctx.storeMeta
+		initialized := len(prevRegion.Peers) > 0
+		if initialized {
+			meta.regionRanges.Delete(&regionItem{region: prevRegion})
+		}
+		if oldRegion := meta.regionRanges.ReplaceOrInsert(&regionItem{region: region}); oldRegion != nil {
+			panic(errors.New("Unexpected oldRegion in meta.regionRanges "))
+		}
+		meta.regions[region.Id] = region
+	}
 }
 
 func (d *peerMsgHandler) HandleMsg(msg message.Msg) {
@@ -114,6 +128,13 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		return
 	}
 	// Your Code Here (2B).
+	if d.peer.stopped {
+		NotifyReqRegionRemoved(d.regionId, cb)
+		return
+	}
+	resp := &raft_cmdpb.RaftCmdResponse{}
+	BindRespTerm(resp, d.Term())
+	d.peer.proposeRaftCommand(d.ctx.cfg, cb, msg, resp)
 }
 
 func (d *peerMsgHandler) onTick() {

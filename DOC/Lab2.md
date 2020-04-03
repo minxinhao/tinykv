@@ -182,3 +182,4 @@ You should run `make lab2b` to pass all the tests.
 2. Now you can simply think that there would be only one Peer on a Store and one Region in a cluster. They will be further introduced in lab3.
 > 没有说过cluster是什么
 3. 对于在raftdb and kvdb中按照文档中给出的格式存储元数据花了一段时间才反应过来。
+4. 设计的各种结构题中总是有很多重复存储的信息，增加了理解的难度

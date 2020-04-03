@@ -529,7 +529,7 @@ func (r *Raft) LeaderStep(m pb.Message) error {
 				rejectFlag = false
 			}
 			// m.RejectHint maybe 0 if follower has  empty entry and  snapshot
-			if progress.Next = min(m.Index, m.RejectHint+1); progress.Next < 1 {
+			if progress.Next = m.Index; progress.Next < 1 {
 				progress.Next = 1
 			}
 			if rejectFlag {
@@ -686,7 +686,7 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	if lastIndex, ok := r.RaftLog.Append(m.Index, m.LogTerm, m.Commit, entries...); ok {
 		r.send(pb.Message{To: m.From, MsgType: pb.MessageType_MsgAppendResponse, Index: lastIndex})
 	} else {
-		r.send(pb.Message{To: m.From, MsgType: pb.MessageType_MsgAppendResponse, Index: m.Index, Reject: true, RejectHint: r.RaftLog.LastIndex()})
+		r.send(pb.Message{To: m.From, MsgType: pb.MessageType_MsgAppendResponse, Index: m.Index, Reject: true})
 	}
 
 }

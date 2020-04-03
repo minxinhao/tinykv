@@ -14,6 +14,7 @@ import (
 	"github.com/pingcap-incubator/tinykv/log"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/metapb"
+	"github.com/pingcap-incubator/tinykv/proto/pkg/raft_cmdpb"
 	rspb "github.com/pingcap-incubator/tinykv/proto/pkg/raft_serverpb"
 	"github.com/pingcap-incubator/tinykv/raft"
 	"github.com/pingcap/errors"
@@ -111,6 +112,7 @@ type peer struct {
 	ApproximateSize *uint64
 }
 
+// Contruct a new peer with given information
 func NewPeer(storeId uint64, cfg *config.Config, engines *engine_util.Engines, region *metapb.Region, regionSched chan<- worker.Task,
 	meta *metapb.Peer) (*peer, error) {
 	if meta.GetId() == util.InvalidID {
@@ -159,14 +161,17 @@ func NewPeer(storeId uint64, cfg *config.Config, engines *engine_util.Engines, r
 	return p, nil
 }
 
+// Set given peer's id and storeID in peerCache
 func (p *peer) insertPeerCache(peer *metapb.Peer) {
 	p.peerCache[peer.GetId()] = peer
 }
 
+// Delete given peer from peerCache
 func (p *peer) removePeerCache(peerID uint64) {
 	delete(p.peerCache, peerID)
 }
 
+// Read the id and storeID of given peerID
 func (p *peer) getPeerFromCache(peerID uint64) *metapb.Peer {
 	if peer, ok := p.peerCache[peerID]; ok {
 		return peer
@@ -180,6 +185,7 @@ func (p *peer) getPeerFromCache(peerID uint64) *metapb.Peer {
 	return nil
 }
 
+// Return the index after raftLog's lastIndex
 func (p *peer) nextProposalIndex() uint64 {
 	return p.RaftGroup.Raft.RaftLog.LastIndex() + 1
 }
@@ -264,6 +270,7 @@ func (p *peer) IsLeader() bool {
 	return p.RaftGroup.Raft.State == raft.StateLeader
 }
 
+// Send messages in msgs through trans
 func (p *peer) Send(trans Transport, msgs []eraftpb.Message) {
 	for _, msg := range msgs {
 		err := p.sendRaftMessage(msg, trans)
@@ -295,6 +302,7 @@ func (p *peer) CollectPendingPeers() []*metapb.Peer {
 	return pendingPeers
 }
 
+// Delete all peers from PeersStartPendingTime
 func (p *peer) clearPeersStartPendingTime() {
 	for id := range p.PeersStartPendingTime {
 		delete(p.PeersStartPendingTime, id)
@@ -326,6 +334,8 @@ func (p *peer) AnyNewPeerCatchUp(peerId uint64) bool {
 	return false
 }
 
+// If there's more than one peer in region and parentIsLeader para is true
+// Launched a campaign
 func (p *peer) MaybeCampaign(parentIsLeader bool) bool {
 	// The peer campaigned when it was created, no need to do it again.
 	if len(p.Region().GetPeers()) <= 1 || !parentIsLeader {
@@ -338,6 +348,7 @@ func (p *peer) MaybeCampaign(parentIsLeader bool) bool {
 	return true
 }
 
+// Return the term of the raft in RaftGroup
 func (p *peer) Term() uint64 {
 	return p.RaftGroup.Raft.Term
 }
@@ -351,6 +362,8 @@ func (p *peer) HeartbeatScheduler(ch chan<- worker.Task) {
 	}
 }
 
+// Construct RaftMessage from msg and set peer information in it
+// Send constructed RaftMessage through trans
 func (p *peer) sendRaftMessage(msg eraftpb.Message, trans Transport) error {
 	sendMsg := new(rspb.RaftMessage)
 	sendMsg.RegionId = p.regionId
@@ -384,4 +397,130 @@ func (p *peer) sendRaftMessage(msg eraftpb.Message, trans Transport) error {
 	}
 	sendMsg.Message = &msg
 	return trans.Send(sendMsg)
+}
+
+func (p *peer) HandleRaftReady(pdScheduler chan<- worker.Task, trans Transport) *ApplySnapResult {
+	if p.stopped {
+		return nil
+	}
+	if !p.RaftGroup.HasReady() {
+		return nil
+	}
+	ready := p.RaftGroup.Ready()
+	if ready.Snapshot.GetMetadata() == nil {
+		ready.Snapshot.Metadata = &eraftpb.SnapshotMetadata{}
+	}
+	if p.IsLeader() {
+		p.Send(trans, ready.Messages)
+		ready.Messages = ready.Messages[:0]
+	}
+	ss := ready.SoftState
+	if ss != nil && ss.RaftState == raft.StateLeader {
+		p.HeartbeatScheduler(pdScheduler)
+	}
+
+	applySnapResult, err := p.peerStorage.SaveReadyState(&ready)
+	if err != nil {
+		panic(err)
+	}
+	if !p.IsLeader() {
+		p.Send(trans, ready.Messages)
+	}
+
+	p.RaftGroup.Advance(ready)
+	return applySnapResult
+}
+
+func (p *peer) proposeKvOp(cfg *config.Config, req *raft_cmdpb.RaftCmdRequest) (uint64, error) {
+	data, err := req.Marshal()
+	if err != nil {
+		return 0, err
+	}
+
+	proposeIndex := p.nextProposalIndex()
+	err = p.RaftGroup.Propose(data)
+	if err != nil {
+		return 0, err
+	}
+
+	// Proposing in raftgroup failed
+	if proposeIndex == p.nextProposalIndex() {
+		return 0, &util.ErrNotLeader{RegionId: p.regionId}
+	}
+
+	return proposeIndex, nil
+}
+
+func (p *peer) proposeRaftCommand(cfg *config.Config, cb *message.Callback, req *raft_cmdpb.RaftCmdRequest, errResp *raft_cmdpb.RaftCmdResponse) bool {
+	if p.stopped {
+		return false
+	}
+
+	req_type, err := p.GetRequestType(req)
+	if err != nil {
+		BindRespError(errResp, err)
+		cb.Done(errResp)
+		return false
+	}
+	var index uint64
+	switch req_type {
+	case RequestType_KvOp:
+		index, err = p.proposeKvOp(cfg, req)
+	case RequestType_TransferLeader:
+		return true
+	case RequestType_ConfChange:
+		return true
+	}
+
+	if err != nil {
+		BindRespError(errResp, err)
+		cb.Done(errResp)
+		return false
+	}
+
+	proposal := &proposal{
+		index: index,
+		term:  p.Term(),
+		cb:    cb,
+	}
+	p.proposals = append(p.proposals, proposal)
+	return true
+}
+
+type RequestType int
+
+const (
+	RequestType_Invalid RequestType = 0 + iota
+	RequestType_KvOp
+	RequestType_TransferLeader
+	RequestType_ConfChange
+)
+
+func (p *peer) GetRequestType(req *raft_cmdpb.RaftCmdRequest) (RequestType, error) {
+	if req.AdminRequest != nil {
+		if req.AdminRequest.ChangePeer != nil {
+			return RequestType_TransferLeader, nil
+		}
+		if req.AdminRequest.TransferLeader != nil {
+			return RequestType_ConfChange, nil
+		}
+	}
+
+	readFlag := false
+	writeFlag := false
+	for _, request := range req.Requests {
+		switch request.CmdType {
+		case raft_cmdpb.CmdType_Get, raft_cmdpb.CmdType_Snap:
+			readFlag = true
+		case raft_cmdpb.CmdType_Delete, raft_cmdpb.CmdType_Put:
+			writeFlag = true
+		case raft_cmdpb.CmdType_Invalid:
+			return RequestType_Invalid, errors.New("CmdType_Invalid can't be proposed")
+		}
+
+		if readFlag && writeFlag {
+			return RequestType_Invalid, errors.New("Request with both read operation and write operation can't be proposed")
+		}
+	}
+	return RequestType_KvOp, nil
 }
