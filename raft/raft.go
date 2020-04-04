@@ -167,6 +167,7 @@ func newRaft(c *Config) *Raft {
 		panic(err.Error())
 	}
 	// Your Code Here (2A).
+	// fmt.Println("fine newRaft")
 	raftLog := newLog(c.Storage)
 	hardState, confState, err := c.Storage.InitialState()
 	if err != nil {
@@ -181,6 +182,7 @@ func newRaft(c *Config) *Raft {
 		electionTimeout:  c.ElectionTick,
 		heartbeatTimeout: c.HeartbeatTick,
 	}
+	// fmt.Println("fine newRaft")
 
 	peers := c.peers
 	if len(confState.Nodes) > 0 {
@@ -192,6 +194,7 @@ func newRaft(c *Config) *Raft {
 	for _, p := range peers {
 		raft.Prs[p] = &Progress{Next: 1}
 	}
+	// fmt.Println("fine newRaft")
 
 	if !IsEmptyHardState(hardState) {
 		if hardState.Commit < raft.RaftLog.committed || hardState.Commit > raft.RaftLog.LastIndex() {
@@ -201,10 +204,12 @@ func newRaft(c *Config) *Raft {
 		raft.Vote = hardState.GetVote()
 		raft.RaftLog.committed = hardState.GetCommit()
 	}
+	// fmt.Println("fine newRaft")
 
 	if c.Applied > 0 {
 		raft.RaftLog.Applied(c.Applied)
 	}
+	// fmt.Println("fine newRaft")
 
 	raft.becomeFollower(raft.Term, None)
 

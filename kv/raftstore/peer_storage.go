@@ -58,6 +58,7 @@ func NewPeerStorage(engines *engine_util.Engines, region *metapb.Region, regionS
 		return nil, err
 	}
 	applyState, err := meta.InitApplyState(engines.Kv, region)
+	// fmt.Println(applyState)
 	if err != nil {
 		return nil, err
 	}
@@ -69,6 +70,7 @@ func NewPeerStorage(engines *engine_util.Engines, region *metapb.Region, regionS
 		Engines:     engines,
 		region:      region,
 		Tag:         tag,
+		applyState:  *applyState,
 		raftState:   *raftState,
 		regionSched: regionSched,
 	}, nil

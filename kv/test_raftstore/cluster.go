@@ -41,6 +41,7 @@ type Cluster struct {
 }
 
 func NewCluster(count int, schedulerClient *MockSchedulerClient, simulator Simulator, cfg *config.Config) *Cluster {
+	// fmt.Println("fine NewCluster")
 	return &Cluster{
 		count:           count,
 		schedulerClient: schedulerClient,
@@ -54,7 +55,7 @@ func NewCluster(count int, schedulerClient *MockSchedulerClient, simulator Simul
 func (c *Cluster) Start() {
 	ctx := context.TODO()
 	clusterID := c.schedulerClient.GetClusterID(ctx)
-
+	// fmt.Println("fine start")
 	for storeID := uint64(1); storeID <= uint64(c.count); storeID++ {
 		dbPath, err := ioutil.TempDir("", "test-raftstore")
 		if err != nil {
@@ -85,6 +86,7 @@ func (c *Cluster) Start() {
 		engine := engine_util.NewEngines(kvDB, raftDB, kvPath, raftPath)
 		c.engines[storeID] = engine
 	}
+	// fmt.Println("fine start")
 
 	regionEpoch := &metapb.RegionEpoch{
 		Version: raftstore.InitEpochVer,
@@ -105,6 +107,7 @@ func (c *Cluster) Start() {
 			panic(err)
 		}
 	}
+	// fmt.Println("fine start")
 
 	for _, engine := range c.engines {
 		raftstore.PrepareBootstrapCluster(engine, firstRegion)
@@ -133,10 +136,13 @@ func (c *Cluster) Start() {
 		}
 		raftstore.ClearPrepareBootstrapState(engine)
 	}
+	// fmt.Println("fine start")
 
 	for storeID := range c.engines {
 		c.StartServer(storeID)
 	}
+	// fmt.Println("fine start")
+
 }
 
 func (c *Cluster) Shutdown() {
@@ -165,10 +171,14 @@ func (c *Cluster) StopServer(storeID uint64) {
 
 func (c *Cluster) StartServer(storeID uint64) {
 	engine := c.engines[storeID]
+	// fmt.Println("fine StartServer")
+	// fmt.Println(c.cfg, engine, context.TODO())
 	err := c.simulator.RunStore(c.cfg, engine, context.TODO())
+	// fmt.Println("fine StartServer")
 	if err != nil {
 		panic(err)
 	}
+	// fmt.Println("fine StartServer")
 }
 
 func (c *Cluster) AllocPeer(storeID uint64) *metapb.Peer {
@@ -185,7 +195,9 @@ func (c *Cluster) Request(key []byte, reqs []*raft_cmdpb.Request, timeout time.D
 		region := c.GetRegion(key)
 		regionID := region.GetId()
 		req := NewRequest(regionID, region.RegionEpoch, reqs)
+		fmt.Println("Request req ", req, " regionID ", regionID)
 		resp, txn := c.CallCommandOnLeader(&req, timeout)
+		// fmt.Println("resp ", resp, " resp.Header.Error ", resp.Header.Error)
 		if resp == nil {
 			// it should be timeouted innerly
 			SleepMS(100)

@@ -36,10 +36,12 @@ func NotifyReqRegionRemoved(regionId uint64, cb *message.Callback) {
 func createPeer(storeID uint64, cfg *config.Config, sched chan<- worker.Task,
 	engines *engine_util.Engines, region *metapb.Region) (*peer, error) {
 	metaPeer := util.FindPeer(region, storeID)
+	// fmt.Println("fine createPeer")
 	if metaPeer == nil {
 		return nil, errors.Errorf("find no peer for store %d in region %v", storeID, region)
 	}
 	log.Infof("region %v create peer with ID %d", region, metaPeer.Id)
+	// fmt.Println("fine createPeer")
 	return NewPeer(storeID, cfg, engines, region, sched, metaPeer)
 }
 
@@ -119,13 +121,15 @@ func NewPeer(storeId uint64, cfg *config.Config, engines *engine_util.Engines, r
 		return nil, fmt.Errorf("invalid peer id")
 	}
 	tag := fmt.Sprintf("[region %v] %v", region.GetId(), meta.GetId())
-
+	// fmt.Println("fine NewPeer")
 	ps, err := NewPeerStorage(engines, region, regionSched, tag)
+	ps.FirstIndex()
 	if err != nil {
 		return nil, err
 	}
 
 	appliedIndex := ps.AppliedIndex()
+	// fmt.Println("fine NewPeer")
 
 	raftCfg := &raft.Config{
 		ID:            meta.GetId(),
@@ -134,6 +138,7 @@ func NewPeer(storeId uint64, cfg *config.Config, engines *engine_util.Engines, r
 		Applied:       appliedIndex,
 		Storage:       ps,
 	}
+	// fmt.Println("fine NewPeer")
 
 	raftGroup, err := raft.NewRawNode(raftCfg)
 	if err != nil {
@@ -149,6 +154,7 @@ func NewPeer(storeId uint64, cfg *config.Config, engines *engine_util.Engines, r
 		Tag:                   tag,
 		ticker:                newTicker(region.GetId(), cfg),
 	}
+	// fmt.Println("fine NewPeer")
 
 	// If this region has only one peer and I am the one, campaign directly.
 	if len(region.GetPeers()) == 1 && region.GetPeers()[0].GetStoreId() == storeId {
@@ -157,6 +163,7 @@ func NewPeer(storeId uint64, cfg *config.Config, engines *engine_util.Engines, r
 			return nil, err
 		}
 	}
+	// fmt.Println("fine NewPeer")
 
 	return p, nil
 }
@@ -477,7 +484,17 @@ func (p *peer) proposeRaftCommand(cfg *config.Config, cb *message.Callback, req 
 		cb.Done(errResp)
 		return false
 	}
-
+	response := []*raft_cmdpb.Response{&raft_cmdpb.Response{
+		CmdType: req.Requests[0].CmdType}}
+	fmt.Println(response[0])
+	fmt.Println(p.Region())
+	if req.Requests[0].CmdType == raft_cmdpb.CmdType_Snap {
+		response[0].Snap.Region = p.Region()
+	}
+	cb.Resp = &raft_cmdpb.RaftCmdResponse{
+		Header:    &raft_cmdpb.RaftResponseHeader{},
+		Responses: response,
+	}
 	proposal := &proposal{
 		index: index,
 		term:  p.Term(),
@@ -523,4 +540,13 @@ func (p *peer) GetRequestType(req *raft_cmdpb.RaftCmdRequest) (RequestType, erro
 		}
 	}
 	return RequestType_KvOp, nil
+}
+
+func (p *peer) GetProposals() []*proposal {
+	if len(p.proposals) == 0 {
+		return nil
+	}
+	proposals := p.proposals
+	p.proposals = nil
+	return proposals
 }

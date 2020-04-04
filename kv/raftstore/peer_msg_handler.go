@@ -43,6 +43,12 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		return
 	}
 	// Your Code Here (2B).
+	msgs := make([]message.Msg, 0)
+	if p := d.peer.GetProposals(); p != nil {
+		msg := message.Msg{Type: message.MsgTypeRaftCmd, Data: p, RegionID: d.peer.regionId}
+		msgs = append(msgs, msg)
+	}
+
 	applySnapResult := d.peer.HandleRaftReady(d.ctx.schedulerTaskSender, d.ctx.trans)
 	if applySnapResult != nil {
 		prevRegion := applySnapResult.PrevRegion
@@ -128,6 +134,7 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		return
 	}
 	// Your Code Here (2B).
+	fmt.Println("Enter proposeRaftCommand")
 	if d.peer.stopped {
 		NotifyReqRegionRemoved(d.regionId, cb)
 		return

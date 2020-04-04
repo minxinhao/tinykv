@@ -147,20 +147,21 @@ func NewNodeSimulator(schedulerClient scheduler_client.Client) *NodeSimulator {
 func (c *NodeSimulator) RunStore(cfg *config.Config, engine *engine_util.Engines, ctx context.Context) error {
 	c.Lock()
 	defer c.Unlock()
-
+	// fmt.Println("fine RunStore")
 	raftRouter, batchSystem := raftstore.CreateRaftBatchSystem(cfg)
 	snapManager := snap.NewSnapManager(cfg.DBPath + "/snap")
 	node := raftstore.NewNode(batchSystem, cfg, c.schedulerClient)
-
+	// fmt.Println("fine RunStore")
 	err := node.Start(ctx, engine, c.trans, snapManager)
 	if err != nil {
 		return err
 	}
+	// fmt.Println("fine RunStore")
 
 	storeID := node.GetStoreID()
 	c.nodes[storeID] = node
 	c.trans.AddStore(storeID, raftRouter, snapManager)
-
+	// fmt.Println("fine RunStore")
 	return nil
 }
 
@@ -210,6 +211,7 @@ func (c *NodeSimulator) CallCommandOnStore(storeID uint64, request *raft_cmdpb.R
 	cb := message.NewCallback()
 	err := router.SendRaftCommand(request, cb)
 	if err != nil {
+		fmt.Println("router.SendRaftCommand err")
 		return nil, nil
 	}
 

@@ -183,3 +183,7 @@ You should run `make lab2b` to pass all the tests.
 > 没有说过cluster是什么
 3. 对于在raftdb and kvdb中按照文档中给出的格式存储元数据花了一段时间才反应过来。
 4. 设计的各种结构题中总是有很多重复存储的信息，增加了理解的难度
+5. 跟work相关的介绍确实有点少，出现bug和work相关时花了不少时间。
+> Raft worker executes the Raft command when handing Raft ready, and returns the response by callback
+6. 这句话让我以为kv命令的处理以及callback的设置都是由raft worker完成了，在测试的过程中才发现需要自己设置。
+7. 可以看一下raftworker相关的代码。

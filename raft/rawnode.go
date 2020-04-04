@@ -81,12 +81,14 @@ func NewRawNode(config *Config) (*RawNode, error) {
 	if config.ID == None {
 		panic("None Leader")
 	}
+	// fmt.Println("fine NewRawNode")
 	raft := newRaft(config)
 	rawNode := &RawNode{
 		Raft:      raft,
 		softState: raft.SoftState(),
 		hardState: raft.HardState(),
 	}
+	// fmt.Println("fine NewRawNode")
 	return rawNode, nil
 }
 

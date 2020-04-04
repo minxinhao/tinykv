@@ -115,7 +115,7 @@ func (bs *RaftBatchSystem) loadPeers() ([]*peer, error) {
 
 	var totalCount, tombStoneCount int
 	var regionPeers []*peer
-
+	// fmt.Println("fine loadPeers")
 	t := time.Now()
 	kvWB := new(engine_util.WriteBatch)
 	raftWB := new(engine_util.WriteBatch)
@@ -151,11 +151,12 @@ func (bs *RaftBatchSystem) loadPeers() ([]*peer, error) {
 				bs.clearStaleMeta(kvWB, raftWB, localState)
 				continue
 			}
-
+			// fmt.Println("fine loadPeers")
 			peer, err := createPeer(storeID, ctx.cfg, ctx.regionTaskSender, ctx.engine, region)
 			if err != nil {
 				return err
 			}
+			// fmt.Println("fine loadPeers")
 			ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: region})
 			ctx.storeMeta.regions[regionID] = region
 			// No need to check duplicated here, because we use region id as the key
@@ -167,6 +168,7 @@ func (bs *RaftBatchSystem) loadPeers() ([]*peer, error) {
 	if err != nil {
 		return nil, err
 	}
+	// fmt.Println("fine loadPeers")
 	kvWB.MustWriteToDB(ctx.engine.Kv)
 	raftWB.MustWriteToDB(ctx.engine.Raft)
 
@@ -221,6 +223,7 @@ func (bs *RaftBatchSystem) start(
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
+	// fmt.Println("fine RaftBatchSystem start")
 	err := snapMgr.Init()
 	if err != nil {
 		return err
@@ -248,14 +251,18 @@ func (bs *RaftBatchSystem) start(
 		schedulerClient:      schedulerClient,
 		tickDriverSender:     bs.tickDriver.newRegionCh,
 	}
+	// fmt.Println("fine RaftBatchSystem start")
+
 	regionPeers, err := bs.loadPeers()
 	if err != nil {
 		return err
 	}
+	// fmt.Println("fine RaftBatchSystem start")
 
 	for _, peer := range regionPeers {
 		bs.router.register(peer)
 	}
+	// fmt.Println("fine RaftBatchSystem start")
 	bs.startWorkers(regionPeers)
 	return nil
 }

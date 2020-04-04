@@ -79,13 +79,14 @@ func newLog(storage Storage) *RaftLog {
 	raftLog := &RaftLog{
 		storage: storage,
 	}
-
+	// fmt.Println("fine newLog")
 	firIndex, err := storage.FirstIndex()
 	if err != nil {
 		panic(err)
 	}
 	raftLog.committed = firIndex - 1
 	raftLog.applied = firIndex - 1
+	// fmt.Println("fine newLog")
 
 	snapLastTerm, err := storage.Term(firIndex - 1)
 	if err != nil {
@@ -93,18 +94,21 @@ func newLog(storage Storage) *RaftLog {
 	}
 	raftLog.snapLastTerm = snapLastTerm
 	raftLog.snapLastIndex = firIndex - 1
+	// fmt.Println("fine newLog")
 
 	lastIndex, err := storage.LastIndex()
 	if err != nil {
 		panic(err)
 	}
 	raftLog.stabled = lastIndex
+	// fmt.Println("fine newLog")
 
 	entries, err := storage.Entries(firIndex, lastIndex+1)
 	if err != nil {
 		panic(err)
 	}
 	raftLog.entries = entries
+	// fmt.Println("fine newLog")
 
 	return raftLog
 }

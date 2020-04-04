@@ -6,6 +6,8 @@ import (
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/message"
 )
 
+// RaftWorker is useful in Lab2B
+
 // raftWorker is responsible for run raft commands and apply raft logs.
 type raftWorker struct {
 	pr *router

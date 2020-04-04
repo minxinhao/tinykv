@@ -39,6 +39,7 @@ func NewNode(system *RaftBatchSystem, cfg *config.Config, schedulerClient schedu
 }
 
 func (n *Node) Start(ctx context.Context, engines *engine_util.Engines, trans Transport, snapMgr *snap.SnapManager) error {
+	// fmt.Println("fine start")
 	storeID, err := n.checkStore(engines)
 	if err != nil {
 		return err
@@ -50,7 +51,7 @@ func (n *Node) Start(ctx context.Context, engines *engine_util.Engines, trans Tr
 		return err
 	}
 	n.store.Id = storeID
-
+	// fmt.Println("fine start")
 	firstRegion, err := n.checkOrPrepareBootstrapCluster(ctx, engines, storeID)
 	if err != nil {
 		return err
@@ -63,15 +64,16 @@ func (n *Node) Start(ctx context.Context, engines *engine_util.Engines, trans Tr
 			return err
 		}
 	}
-
+	// fmt.Println("fine start")
 	err = n.schedulerClient.PutStore(ctx, n.store)
 	if err != nil {
 		return err
 	}
+	// fmt.Println("fine start")
 	if err = n.startNode(engines, trans, snapMgr); err != nil {
 		return err
 	}
-
+	// fmt.Println("fine start")
 	return nil
 }
 

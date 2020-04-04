@@ -155,6 +155,7 @@ func confchanger(t *testing.T, cluster *Cluster, ch chan bool, done *int32) {
 // - If confchangee is set, the cluster will schedule random conf change concurrently.
 // - If split is set, split region when size exceed 1024 bytes.
 func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash bool, partitions bool, maxraftlog int, confchange bool, split bool) {
+	// fmt.Println("fine")
 	title := "Test: "
 	if unreliable {
 		// the network drops RPC requests and replies.
@@ -187,10 +188,13 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 		cfg.RegionMaxSize = 300
 		cfg.RegionSplitSize = 200
 	}
+	// fmt.Println("fine")
 	cluster := NewTestCluster(nservers, cfg)
+	// fmt.Println("fine")
 	cluster.Start()
+	// fmt.Println("fine")
 	defer cluster.Shutdown()
-
+	// fmt.Println("fine")
 	electionTimeout := cfg.RaftBaseTickInterval * time.Duration(cfg.RaftElectionTimeoutTicks)
 	// Wait for leader election
 	time.Sleep(2 * electionTimeout)
@@ -209,6 +213,7 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 		// log.Printf("Iteration %v\n", i)
 		atomic.StoreInt32(&done_clients, 0)
 		atomic.StoreInt32(&done_partitioner, 0)
+		// fmt.Println("fine")
 		go SpawnClientsAndWait(t, ch_clients, nclients, func(cli int, t *testing.T) {
 			j := 0
 			defer func() {
@@ -219,7 +224,7 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 				if (rand.Int() % 1000) < 500 {
 					key := strconv.Itoa(cli) + " " + fmt.Sprintf("%08d", j)
 					value := "x " + strconv.Itoa(cli) + " " + strconv.Itoa(j) + " y"
-					// log.Infof("%d: client new put %v,%v\n", cli, key, value)
+					log.Infof("%d: client new put %v,%v\n", cli, key, value)
 					cluster.MustPut([]byte(key), []byte(value))
 					last = NextValue(last, value)
 					j++
@@ -235,7 +240,7 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 				}
 			}
 		})
-
+		// fmt.Println("fine")
 		if partitions {
 			// Allow the clients to perform some operations without interruption
 			time.Sleep(300 * time.Millisecond)
@@ -261,7 +266,7 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 			// wait for a while so that we have a new term
 			time.Sleep(electionTimeout)
 		}
-
+		// fmt.Println("fine")
 		// log.Printf("wait for clients\n")
 		<-ch_clients
 
@@ -279,7 +284,7 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 				cluster.StartServer(uint64(i))
 			}
 		}
-
+		// fmt.Println("fine")
 		for cli := 0; cli < nclients; cli++ {
 			// log.Printf("read from clients %d\n", cli)
 			j := <-clnts[cli]
@@ -298,7 +303,7 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 				cluster.MustDelete([]byte(key))
 			}
 		}
-
+		// fmt.Println("fine")
 		if maxraftlog > 0 {
 			// Check maximum after the servers have processed all client
 			// requests and had time to checkpoint.
@@ -329,13 +334,14 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 				}
 			}
 		}
-
+		// fmt.Println("fine")
 		if split {
 			r := cluster.GetRegion([]byte(""))
 			if len(r.GetEndKey()) == 0 {
 				t.Fatalf("region is not split")
 			}
 		}
+		// fmt.Println("fine")
 	}
 }
 

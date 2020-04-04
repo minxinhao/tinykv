@@ -129,6 +129,7 @@ func MustGetNone(engine *engine_util.Engines, key []byte) {
 }
 
 func NewTestCluster(count int, cfg *config.Config) *Cluster {
+	// fmt.Println("fine NewTestCluster")
 	log.SetLevelByString(cfg.LogLevel)
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds | log.Lshortfile)
 	schedulerClient := NewMockSchedulerClient(0, uint64(count)+1)
