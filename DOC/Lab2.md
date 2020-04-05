@@ -187,3 +187,5 @@ You should run `make lab2b` to pass all the tests.
 > Raft worker executes the Raft command when handing Raft ready, and returns the response by callback
 6. 这句话让我以为kv命令的处理以及callback的设置都是由raft worker完成了，在测试的过程中才发现需要自己设置。
 7. 可以看一下raftworker相关的代码。
+> Do not forget to `writeApplyState()` is provided for you to persist apply state
+8. 没有这个函数。

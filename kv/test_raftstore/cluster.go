@@ -27,9 +27,11 @@ type Simulator interface {
 	AddFilter(filter Filter)
 	ClearFilters()
 	GetStoreIds() []uint64
+	// Send cmdRequest to peer and get response and callback
 	CallCommandOnStore(storeID uint64, request *raft_cmdpb.RaftCmdRequest, timeout time.Duration) (*raft_cmdpb.RaftCmdResponse, *badger.Txn)
 }
 
+// clust is an upper structure encapsulated on a peer basis to provide kv operation to the client
 type Cluster struct {
 	schedulerClient *MockSchedulerClient
 	count           int
@@ -43,15 +45,18 @@ type Cluster struct {
 func NewCluster(count int, schedulerClient *MockSchedulerClient, simulator Simulator, cfg *config.Config) *Cluster {
 	// fmt.Println("fine NewCluster")
 	return &Cluster{
+		// the number of peers
 		count:           count,
 		schedulerClient: schedulerClient,
-		engines:         make(map[uint64]*engine_util.Engines),
-		snapPaths:       make(map[uint64]string),
-		simulator:       simulator,
-		cfg:             cfg,
+		// engines of peers
+		engines:   make(map[uint64]*engine_util.Engines),
+		snapPaths: make(map[uint64]string),
+		simulator: simulator,
+		cfg:       cfg,
 	}
 }
 
+// Construct a cluster object and initialize all data members
 func (c *Cluster) Start() {
 	ctx := context.TODO()
 	clusterID := c.schedulerClient.GetClusterID(ctx)
@@ -169,6 +174,7 @@ func (c *Cluster) StopServer(storeID uint64) {
 	c.simulator.StopStore(storeID)
 }
 
+//
 func (c *Cluster) StartServer(storeID uint64) {
 	engine := c.engines[storeID]
 	// fmt.Println("fine StartServer")
@@ -195,7 +201,7 @@ func (c *Cluster) Request(key []byte, reqs []*raft_cmdpb.Request, timeout time.D
 		region := c.GetRegion(key)
 		regionID := region.GetId()
 		req := NewRequest(regionID, region.RegionEpoch, reqs)
-		fmt.Println("Request req ", req, " regionID ", regionID)
+		// fmt.Println("Request req ", req, " regionID ", regionID)
 		resp, txn := c.CallCommandOnLeader(&req, timeout)
 		// fmt.Println("resp ", resp, " resp.Header.Error ", resp.Header.Error)
 		if resp == nil {
@@ -382,6 +388,8 @@ func (c *Cluster) Scan(start, end []byte) [][]byte {
 			panic("resp.Responses[0].CmdType != raft_cmdpb.CmdType_Snap")
 		}
 		region := resp.Responses[0].GetSnap().Region
+		// fmt.Println(region)
+		// panic because the txn is nil
 		iter := raft_storage.NewRegionReader(txn, *region).IterCF(engine_util.CfDefault)
 		for iter.Seek(key); iter.Valid(); iter.Next() {
 			if engine_util.ExceedEndKey(iter.Item().Key(), end) {

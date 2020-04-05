@@ -134,13 +134,14 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		return
 	}
 	// Your Code Here (2B).
-	fmt.Println("Enter proposeRaftCommand")
+	// fmt.Println("Enter proposeRaftCommand")
 	if d.peer.stopped {
 		NotifyReqRegionRemoved(d.regionId, cb)
 		return
 	}
 	resp := &raft_cmdpb.RaftCmdResponse{}
 	BindRespTerm(resp, d.Term())
+	// fmt.Println(d.peer.Region())
 	d.peer.proposeRaftCommand(d.ctx.cfg, cb, msg, resp)
 }
 

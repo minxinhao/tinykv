@@ -200,6 +200,7 @@ func (c *NodeSimulator) GetStoreIds() []uint64 {
 	return storeIDs
 }
 
+// This func is called by cluster.Request finally to get response and callback from peer
 func (c *NodeSimulator) CallCommandOnStore(storeID uint64, request *raft_cmdpb.RaftCmdRequest, timeout time.Duration) (*raft_cmdpb.RaftCmdResponse, *badger.Txn) {
 	c.RLock()
 	router := c.trans.routers[storeID]
@@ -211,10 +212,11 @@ func (c *NodeSimulator) CallCommandOnStore(storeID uint64, request *raft_cmdpb.R
 	cb := message.NewCallback()
 	err := router.SendRaftCommand(request, cb)
 	if err != nil {
-		fmt.Println("router.SendRaftCommand err")
+		// fmt.Println("router.SendRaftCommand err")
 		return nil, nil
 	}
 
 	resp := cb.WaitRespWithTimeout(timeout)
+	// It's important to set the resp and cb
 	return resp, cb.Txn
 }

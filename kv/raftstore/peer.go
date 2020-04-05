@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/Connor1996/badger"
 	"github.com/pingcap-incubator/tinykv/kv/config"
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/message"
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/meta"
@@ -164,7 +165,7 @@ func NewPeer(storeId uint64, cfg *config.Config, engines *engine_util.Engines, r
 		}
 	}
 	// fmt.Println("fine NewPeer")
-
+	// fmt.Println(p.Region())
 	return p, nil
 }
 
@@ -417,6 +418,7 @@ func (p *peer) HandleRaftReady(pdScheduler chan<- worker.Task, trans Transport) 
 	if ready.Snapshot.GetMetadata() == nil {
 		ready.Snapshot.Metadata = &eraftpb.SnapshotMetadata{}
 	}
+
 	if p.IsLeader() {
 		p.Send(trans, ready.Messages)
 		ready.Messages = ready.Messages[:0]
@@ -435,6 +437,26 @@ func (p *peer) HandleRaftReady(pdScheduler chan<- worker.Task, trans Transport) 
 	}
 
 	p.RaftGroup.Advance(ready)
+	for _, msg := range ready.Messages {
+		if len(p.proposals) == 0 {
+			break
+		}
+		if msg.MsgType != eraftpb.MessageType_MsgPropose {
+			continue
+		}
+		for _, entry := range msg.Entries {
+			if entry == nil {
+				break
+			}
+			req := new(raft_cmdpb.RaftCmdRequest)
+			req.Unmarshal(entry.Data)
+			resp, txn := p.ApplyRaftCommand(req, new(engine_util.WriteBatch))
+			cb := p.proposals[msg.Index-p.proposals[0].index].cb
+			cb.Resp = resp
+			cb.Txn = txn
+		}
+	}
+	p.proposals = nil
 	return applySnapResult
 }
 
@@ -462,6 +484,7 @@ func (p *peer) proposeRaftCommand(cfg *config.Config, cb *message.Callback, req 
 	if p.stopped {
 		return false
 	}
+	// fmt.Println(p.Region())
 
 	req_type, err := p.GetRequestType(req)
 	if err != nil {
@@ -478,29 +501,37 @@ func (p *peer) proposeRaftCommand(cfg *config.Config, cb *message.Callback, req 
 	case RequestType_ConfChange:
 		return true
 	}
+	// fmt.Println(p.Region())
 
 	if err != nil {
 		BindRespError(errResp, err)
 		cb.Done(errResp)
 		return false
 	}
-	response := []*raft_cmdpb.Response{&raft_cmdpb.Response{
-		CmdType: req.Requests[0].CmdType}}
-	fmt.Println(response[0])
-	fmt.Println(p.Region())
-	if req.Requests[0].CmdType == raft_cmdpb.CmdType_Snap {
-		response[0].Snap.Region = p.Region()
-	}
-	cb.Resp = &raft_cmdpb.RaftCmdResponse{
-		Header:    &raft_cmdpb.RaftResponseHeader{},
-		Responses: response,
-	}
+	// response := []*raft_cmdpb.Response{&raft_cmdpb.Response{
+	// 	CmdType: req.Requests[0].CmdType}}
+	// // fmt.Println(response[0])
+	// if req.Requests[0].CmdType == raft_cmdpb.CmdType_Snap {
+	// 	response[0].Snap = &raft_cmdpb.SnapResponse{
+	// 		Region: p.Region(),
+	// 	}
+	// }
+	// cb.Resp = &raft_cmdpb.RaftCmdResponse{
+	// 	Header:    &raft_cmdpb.RaftResponseHeader{},
+	// 	Responses: response,
+	// }
+	// if req.Requests[0].CmdType == raft_cmdpb.CmdType_Delete || req.Requests[0].CmdType == raft_cmdpb.CmdType_Put {
+	// 	cb.Txn = p.peerStorage.Engines.Raft.NewTransaction(true)
+	// } else {
+	// 	cb.Txn = p.peerStorage.Engines.Raft.NewTransaction(false)
+	// }
 	proposal := &proposal{
 		index: index,
 		term:  p.Term(),
 		cb:    cb,
 	}
 	p.proposals = append(p.proposals, proposal)
+	fmt.Println("After proposeRaftCommand p.proposals ", p.proposals)
 	return true
 }
 
@@ -549,4 +580,117 @@ func (p *peer) GetProposals() []*proposal {
 	proposals := p.proposals
 	p.proposals = nil
 	return proposals
+}
+
+func (p *peer) ApplyRaftCommand(req *raft_cmdpb.RaftCmdRequest, wb *engine_util.WriteBatch) (
+	*raft_cmdpb.RaftCmdResponse, *badger.Txn) {
+	wb.SetSafePoint()
+	resp, txn, err := p.RunRaftCommand(req, wb)
+	if err != nil {
+		wb.RollbackToSafePoint()
+		if txn != nil {
+			txn.Discard()
+			txn = nil
+		}
+		resp = ErrResp(err)
+	}
+	return resp, txn
+}
+
+func (p *peer) RunRaftCommand(req *raft_cmdpb.RaftCmdRequest, wb *engine_util.WriteBatch) (
+	resp *raft_cmdpb.RaftCmdResponse, txn *badger.Txn, err error) {
+	err = util.CheckRegionEpoch(req, p.Region(), false)
+	if err != nil {
+		return
+	}
+	requests := req.GetRequests()
+	resps := make([]*raft_cmdpb.Response, 0, len(requests))
+	writeFlag, readFlag := false, false
+	for _, req := range requests {
+		switch req.CmdType {
+		case raft_cmdpb.CmdType_Put:
+			var r *raft_cmdpb.Response
+			r, err = p.RunPut(req.GetPut(), wb)
+			resps = append(resps, r)
+			writeFlag = true
+		case raft_cmdpb.CmdType_Delete:
+			var r *raft_cmdpb.Response
+			r, err = p.RunDelete(req.GetDelete(), wb)
+			resps = append(resps, r)
+			writeFlag = true
+		case raft_cmdpb.CmdType_Get:
+			var r *raft_cmdpb.Response
+			r, err = p.RunGet(req.GetGet())
+			resps = append(resps, r)
+			readFlag = true
+		case raft_cmdpb.CmdType_Snap:
+			resps = append(resps, &raft_cmdpb.Response{
+				CmdType: raft_cmdpb.CmdType_Snap,
+				Snap:    &raft_cmdpb.SnapResponse{Region: p.Region()},
+			})
+			txn = p.peerStorage.Engines.Kv.NewTransaction(false)
+			readFlag = true
+		}
+	}
+	if writeFlag && readFlag {
+		panic("Invalid request withi both write and read operation")
+	}
+	resp = newCmdRespForReq(req)
+	resp.Responses = resps
+	return
+}
+
+func (p *peer) RunPut(req *raft_cmdpb.PutRequest, wb *engine_util.WriteBatch) (*raft_cmdpb.Response, error) {
+	key, value := req.GetKey(), req.GetValue()
+	if err := util.CheckKeyInRegion(key, p.Region()); err != nil {
+		return nil, err
+	}
+
+	if cf := req.GetCf(); len(cf) != 0 {
+		wb.SetCF(cf, key, value)
+	} else {
+		wb.SetCF(engine_util.CfDefault, key, value)
+	}
+	return &raft_cmdpb.Response{
+		CmdType: raft_cmdpb.CmdType_Put,
+	}, nil
+}
+
+func (p *peer) RunGet(req *raft_cmdpb.GetRequest) (*raft_cmdpb.Response, error) {
+	key := req.GetKey()
+	if err := util.CheckKeyInRegion(key, p.Region()); err != nil {
+		return nil, err
+	}
+	var val []byte
+	var err error
+	if cf := req.GetCf(); len(cf) != 0 {
+		val, err = engine_util.GetCF(p.peerStorage.Engines.Kv, cf, key)
+	} else {
+		val, err = engine_util.GetCF(p.peerStorage.Engines.Kv, engine_util.CfDefault, key)
+	}
+	if err == badger.ErrKeyNotFound {
+		err = nil
+		val = nil
+	}
+
+	return &raft_cmdpb.Response{
+		CmdType: raft_cmdpb.CmdType_Get,
+		Get:     &raft_cmdpb.GetResponse{Value: val},
+	}, err
+}
+
+func (p *peer) RunDelete(req *raft_cmdpb.DeleteRequest, wb *engine_util.WriteBatch) (*raft_cmdpb.Response, error) {
+	key := req.GetKey()
+	if err := util.CheckKeyInRegion(key, p.Region()); err != nil {
+		return nil, err
+	}
+
+	if cf := req.GetCf(); len(cf) != 0 {
+		wb.DeleteCF(cf, key)
+	} else {
+		wb.DeleteCF(engine_util.CfDefault, key)
+	}
+	return &raft_cmdpb.Response{
+		CmdType: raft_cmdpb.CmdType_Delete,
+	}, nil
 }
