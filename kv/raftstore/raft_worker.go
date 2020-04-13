@@ -1,6 +1,7 @@
 package raftstore
 
 import (
+	"fmt"
 	"sync"
 
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/message"
@@ -47,12 +48,14 @@ func (rw *raftWorker) run(closeCh <-chan struct{}, wg *sync.WaitGroup) {
 		peerStateMap := make(map[uint64]*peerState)
 		for _, msg := range msgs {
 			peerState := rw.getPeerState(peerStateMap, msg.RegionID)
+			fmt.Println("Call HandleMsg for ", peerState.peer.PeerId(), " with msg ", msg)
 			if peerState == nil {
 				continue
 			}
 			newPeerMsgHandler(peerState.peer, rw.ctx).HandleMsg(msg)
 		}
 		for _, peerState := range peerStateMap {
+			fmt.Println("Call HandleRaftReady for ", peerState.peer.PeerId(), " with msgs ", msgs)
 			newPeerMsgHandler(peerState.peer, rw.ctx).HandleRaftReady()
 		}
 	}

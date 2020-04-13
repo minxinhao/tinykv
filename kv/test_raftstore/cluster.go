@@ -201,9 +201,9 @@ func (c *Cluster) Request(key []byte, reqs []*raft_cmdpb.Request, timeout time.D
 		region := c.GetRegion(key)
 		regionID := region.GetId()
 		req := NewRequest(regionID, region.RegionEpoch, reqs)
-		// fmt.Println("Request req ", req, " regionID ", regionID)
 		resp, txn := c.CallCommandOnLeader(&req, timeout)
-		// fmt.Println("resp ", resp, " resp.Header.Error ", resp.Header.Error)
+		// fmt.Println("req ", req)
+		// fmt.Println("resp ", resp)
 		if resp == nil {
 			// it should be timeouted innerly
 			SleepMS(100)
@@ -391,8 +391,15 @@ func (c *Cluster) Scan(start, end []byte) [][]byte {
 		// fmt.Println(region)
 		// panic because the txn is nil
 		iter := raft_storage.NewRegionReader(txn, *region).IterCF(engine_util.CfDefault)
+		// fmt.Println("key ", string(key), " end ", string(end))
+		iter.Seek(key)
+		if !iter.Valid() {
+			// fmt.Println("Invalid after seek to key")
+		}
 		for iter.Seek(key); iter.Valid(); iter.Next() {
 			if engine_util.ExceedEndKey(iter.Item().Key(), end) {
+				// fmt.Println("Scan: key exceedEneKey key ", string(iter.Item().Key()),
+				// 	" endKey ", string(end))
 				break
 			}
 			value, err := iter.Item().ValueCopy(nil)
@@ -400,6 +407,7 @@ func (c *Cluster) Scan(start, end []byte) [][]byte {
 				panic(err)
 			}
 			values = append(values, value)
+			// fmt.Println("key", string(iter.Item().Key()), " values ", string(value))
 		}
 		iter.Close()
 

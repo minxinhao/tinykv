@@ -135,12 +135,12 @@ RegionLocalState: Used to store Region information and the corresponding Peer st
 These should be created and updated in `PeerStorage`. When creating PeerStorage, it gets the previous RaftLocalState, RaftApplyState and last_term of this Peer from underlying engine. The value of both RAFT_INIT_LOG_TERM and RAFT_INIT_LOG_INDEX is 5 (as long as it's larger than 1). These will be cached to memory for the subsequent quick access.
 These states are stored in two badger instances: raftdb and kvdb. raftdb stores raft log and `RaftLocalState`; kvdb stores key-value data in different column families, `RegionLocalState` and `RaftApplyState`. The format is as below and some helper functions are provided in `kv/raftstore/meta`, and set them to badger with writebatch.SetMeta()
 
-| Key |  KeyFormat | Value | DB |
-| --- | ---------- | ----- | -- |
-|raft_log_key | 0x01 0x02 region_id 0x01 log_idx | Entry | raft |
-| raft_state_key | 0x01 0x02 region_id 0x02 | RaftLocalState | raft |
-| apply_state_key | 0x01 0x02 region_id 0x03 | RaftApplyState | kv |
-| region_state_key | 0x01 0x03 region_id 0x01 | RegionLocalState | kv |
+| Key              | KeyFormat                        | Value            | DB   |
+| ---------------- | -------------------------------- | ---------------- | ---- |
+| raft_log_key     | 0x01 0x02 region_id 0x01 log_idx | Entry            | raft |
+| raft_state_key   | 0x01 0x02 region_id 0x02         | RaftLocalState   | raft |
+| apply_state_key  | 0x01 0x02 region_id 0x03         | RaftApplyState   | kv   |
+| region_state_key | 0x01 0x03 region_id 0x01         | RegionLocalState | kv   |
 
 The code you need to implement in this part is only one function:  `PeerStorage.SaveReadyState`, what this function does is to save the data in `raft.Ready` to badger, including: apply snapshot, append log entries and save the hard state.
  To apply snapshot, first unmarshal `eraftpb.Snapshot.Data` at `raft.Ready.Snapshot` to `rspb.RaftSnapshotData` which contains the new region meta and along with the `eraftpb.Snapshot.Metadata`, you can now update the peer storage’s memory state like `RaftLocalState`, `RaftApplyState` and `RegionLocalState`, also don’t forget to persist these state to badger and remove stale state from badger. Besides, you also need to update `PeerStorage.snapState` to `snap.SnapState_Applying` and send `runner.RegionTaskApply` task to region worker through `PeerStorage.regionSched` and  wait until region worker finish.
@@ -159,7 +159,6 @@ Here are some hints for this step:
 Use `WriteBatch` in `engine_util` to make multiple writes atomically, for example, you need to make sure apply the committed entires and update applied index in one write batch. 
 Use `Transport` to send raft messages to other peers, it’s in the `GlobalContext`, 
 The server should not complete a get RPC if it is not part of a majority and do not has up-to-date data. You can just put the get operation into the log, or implement the optimization for read-only operations that is described in Section 8 in the Raft paper. 
-Do not forget to `writeApplyState()` is provided for you to persist apply state
 You can apply the committed Raft log entries in an asynchronous way just like TiKV does. It’s not necessary, though a big challenge to improve performance.
 Record the callback of the command when proposing, and return the callback after applying.
 For the snap command response, should set badger Txn to callback explicitly.
@@ -183,9 +182,12 @@ You should run `make lab2b` to pass all the tests.
 > 没有说过cluster是什么
 3. 对于在raftdb and kvdb中按照文档中给出的格式存储元数据花了一段时间才反应过来。
 4. 设计的各种结构题中总是有很多重复存储的信息，增加了理解的难度
-5. 跟work相关的介绍确实有点少，出现bug和work相关时花了不少时间。
 > Raft worker executes the Raft command when handing Raft ready, and returns the response by callback
-6. 这句话让我以为kv命令的处理以及callback的设置都是由raft worker完成了，在测试的过程中才发现需要自己设置。
-7. 可以看一下raftworker相关的代码。
+5. 这句话让我以为kv命令的处理以及callback的设置都是由raft worker完成了，在测试的过程中才发现需要自己设置。
+6. 可以看一下raftworker相关的代码。
 > Do not forget to `writeApplyState()` is provided for you to persist apply state
-8. 没有这个函数。
+7. 没有这个函数。
+8. 对于proposals没有任何提示的逻辑？
+> The server should not complete a get RPC if it is not part of a majority and do not has up-to-date data. You can just put the get operation into the log, or implement the optimization for read-only operations that is described in Section 8 in the Raft paper. 
+9. 所以实际上对Get并不需要特殊处理？因为Raft的leader直接保证了大多数的一致性，并且我们只通过leader来和上层的cluster以及raft storage进行交互。
+10. GenericTest真的太长了，并且测试的逻辑在debug的时候也不方便。

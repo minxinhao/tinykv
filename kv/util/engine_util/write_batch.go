@@ -1,6 +1,8 @@
 package engine_util
 
 import (
+	"fmt"
+
 	"github.com/Connor1996/badger"
 	"github.com/golang/protobuf/proto"
 	"github.com/pingcap/errors"
@@ -80,6 +82,7 @@ func (wb *WriteBatch) WriteToDB(db *badger.DB) error {
 					err1 = txn.Delete(entry.Key)
 				} else {
 					err1 = txn.SetEntry(entry)
+					// fmt.Println("WriteToDB put key ", string(entry.Key), " value ", string(entry.Value))
 				}
 				if err1 != nil {
 					return err1
@@ -94,6 +97,16 @@ func (wb *WriteBatch) WriteToDB(db *badger.DB) error {
 	return nil
 }
 
+func (wb *WriteBatch) PrintEntries() {
+	for _, entry := range wb.entries {
+		if len(entry.Value) == 0 {
+			fmt.Println("WriteToDB Delete key ", string(entry.Key))
+		} else {
+			fmt.Println("WriteToDB put key ", string(entry.Key), " value ", string(entry.Value))
+		}
+
+	}
+}
 func (wb *WriteBatch) MustWriteToDB(db *badger.DB) {
 	err := wb.WriteToDB(db)
 	if err != nil {

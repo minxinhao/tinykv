@@ -231,10 +231,10 @@ func (r *Raft) sendAppend(to uint64) bool {
 	var entries []pb.Entry
 	var err_entries error
 	if progress.Next < r.RaftLog.FirstIndex() {
-		// fmt.Println("sendAppend case 1")
+		// fmt.Println(r.id, "to ", to, " sendAppend case 1 ")
 		entries, err_entries = nil, ErrCompacted
 	} else if progress.Next > r.RaftLog.LastIndex() {
-		// fmt.Println("sendAppend case 2 LastIndex ", r.RaftLog.LastIndex(), " Next ", progress.Next)
+		// fmt.Println(r.id, "to ", to, " sendAppend case 2 LastIndex ", r.RaftLog.LastIndex(), " Next ", progress.Next)
 		entries, err_entries = nil, nil
 	} else {
 		entries, err_entries = r.RaftLog.entries[progress.Next-r.RaftLog.snapLastIndex-1:], nil
@@ -263,7 +263,7 @@ func (r *Raft) sendAppend(to uint64) bool {
 		message.Entries = message_entries
 		message.Commit = r.RaftLog.committed
 	}
-
+	// fmt.Println("Leader ", r.id, "sendappend to ", to, "with msg ", message)
 	r.send(message)
 	return true
 }
@@ -349,6 +349,7 @@ func (r *Raft) becomeCandidate() {
 // becomeLeader transform this peer's state to leader
 func (r *Raft) becomeLeader() {
 	// Your Code Here (2A).
+	// fmt.Println("Become Leader ", r.id)
 	r.fresh()
 	r.Lead = r.id
 	r.State = StateLeader
@@ -460,7 +461,7 @@ func (r *Raft) StepMsgHup() {
 	// if num_Conf != 0 && r.RaftLog.committed > r.RaftLog.applied {
 	// 	return
 	// }
-
+	// fmt.Println("Start election")
 	r.becomeCandidate()
 	index := r.RaftLog.LastIndex()
 	logTerm, err := r.RaftLog.Term(index)
@@ -506,7 +507,7 @@ func (r *Raft) LeaderStep(m pb.Message) error {
 			r.sendHeartbeat(id)
 		}
 	case pb.MessageType_MsgPropose:
-		// fmt.Println("Leader step MessageType_MsgPropose")
+		// fmt.Println("Leader step MessageType_MsgPropose ", m)
 		if len(m.Entries) == 0 {
 			panic("Invalid propose message with empty entries")
 		}
@@ -520,12 +521,16 @@ func (r *Raft) LeaderStep(m pb.Message) error {
 		}
 
 		r.AppendEntry(entries...)
+		if len(r.Prs) != 5 {
+			// panic("sendAppend without full peers")
+		}
 		for id, _ := range r.Prs {
 			if id == r.id {
 				continue
 			}
 			r.sendAppend(id)
 		}
+		// fmt.Println("After  the raftLog is", *r.RaftLog)
 		return nil
 	case pb.MessageType_MsgAppendResponse:
 		if m.Reject {
@@ -638,6 +643,7 @@ func (r *Raft) FollowerStep(m pb.Message) error {
 	case pb.MessageType_MsgAppend:
 		if m.Term < r.Term {
 			//Invalid Leader
+			fmt.Println(r.id, " reject append msg for term msg ", m)
 			r.send(pb.Message{To: m.From, MsgType: pb.MessageType_MsgAppendResponse, Term: r.Term, Reject: true})
 			return nil
 		}
@@ -679,6 +685,7 @@ func (r *Raft) FollowerStep(m pb.Message) error {
 func (r *Raft) handleAppendEntries(m pb.Message) {
 	// Your Code Here (2A).
 	if m.Index < r.RaftLog.committed {
+		fmt.Println(r.id, "reject append msg ", m)
 		r.send(pb.Message{To: m.From, MsgType: pb.MessageType_MsgAppendResponse, Index: r.RaftLog.committed})
 		return
 	}

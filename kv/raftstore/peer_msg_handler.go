@@ -43,14 +43,9 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		return
 	}
 	// Your Code Here (2B).
-	msgs := make([]message.Msg, 0)
-	if p := d.peer.GetProposals(); p != nil {
-		msg := message.Msg{Type: message.MsgTypeRaftCmd, Data: p, RegionID: d.peer.regionId}
-		msgs = append(msgs, msg)
-	}
-
 	applySnapResult := d.peer.HandleRaftReady(d.ctx.schedulerTaskSender, d.ctx.trans)
 	if applySnapResult != nil {
+		fmt.Println("HandleRaftReady applySnapResult != nil")
 		prevRegion := applySnapResult.PrevRegion
 		region := applySnapResult.Region
 		meta := d.ctx.storeMeta
@@ -142,7 +137,7 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 	resp := &raft_cmdpb.RaftCmdResponse{}
 	BindRespTerm(resp, d.Term())
 	// fmt.Println(d.peer.Region())
-	d.peer.proposeRaftCommand(d.ctx.cfg, cb, msg, resp)
+	d.peer.Propose(d.ctx.cfg, cb, msg, resp)
 }
 
 func (d *peerMsgHandler) onTick() {

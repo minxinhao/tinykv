@@ -412,6 +412,7 @@ func (p *peer) HandleRaftReady(pdScheduler chan<- worker.Task, trans Transport) 
 		return nil
 	}
 	if !p.RaftGroup.HasReady() {
+		fmt.Println(p.PeerId(), " has no ready")
 		return nil
 	}
 	ready := p.RaftGroup.Ready()
@@ -419,10 +420,9 @@ func (p *peer) HandleRaftReady(pdScheduler chan<- worker.Task, trans Transport) 
 		ready.Snapshot.Metadata = &eraftpb.SnapshotMetadata{}
 	}
 
-	if p.IsLeader() {
-		p.Send(trans, ready.Messages)
-		ready.Messages = ready.Messages[:0]
-	}
+	p.Send(trans, ready.Messages)
+	ready.Messages = ready.Messages[:0]
+
 	ss := ready.SoftState
 	if ss != nil && ss.RaftState == raft.StateLeader {
 		p.HeartbeatScheduler(pdScheduler)
@@ -432,32 +432,63 @@ func (p *peer) HandleRaftReady(pdScheduler chan<- worker.Task, trans Transport) 
 	if err != nil {
 		panic(err)
 	}
-	if !p.IsLeader() {
-		p.Send(trans, ready.Messages)
+
+	fmt.Println(p.PeerId(), " get  ready ", ready)
+
+	if len(ready.CommittedEntries) == 0 {
+		fmt.Println(p.PeerId(), " get ready with empty CommittedEntries")
+	}
+	// fmt.Println(p.PeerId(), " handleready get ready commitentries  ", ready.CommittedEntries)
+	if len(ready.CommittedEntries) > 0 {
+		p.ApplyReady(&ready)
 	}
 
 	p.RaftGroup.Advance(ready)
-	for _, msg := range ready.Messages {
-		if len(p.proposals) == 0 {
+	return applySnapResult
+}
+
+func (p *peer) ApplyReady(ready *raft.Ready) {
+	for _, entry := range ready.CommittedEntries {
+
+		req := new(raft_cmdpb.RaftCmdRequest)
+		err := req.Unmarshal(entry.Data)
+		if err != nil {
+			panic(err)
+		}
+		fmt.Println(p.PeerId(), " HandleReady get req ", req)
+		resp, txn := p.ApplyRaftCommand(req, new(engine_util.WriteBatch))
+		if p.proposals == nil || len(p.proposals) == 0 {
+			// fmt.Println(p.PeerId(), " exits handleready with empty proposal  ")
 			break
-		}
-		if msg.MsgType != eraftpb.MessageType_MsgPropose {
-			continue
-		}
-		for _, entry := range msg.Entries {
-			if entry == nil {
-				break
+		} else {
+			cb := p.findCallback(entry.Index, entry.Term)
+			if cb == nil {
+				// fmt.Println("No match callback for index ", entry.Index, " term ", entry.Term, "with resp ", resp)
+			} else {
+				cb.Resp = resp
+				cb.Txn = txn
+				cb.Done(resp)
+				// fmt.Printf("Set callback with %v\n", resp)
 			}
-			req := new(raft_cmdpb.RaftCmdRequest)
-			req.Unmarshal(entry.Data)
-			resp, txn := p.ApplyRaftCommand(req, new(engine_util.WriteBatch))
-			cb := p.proposals[msg.Index-p.proposals[0].index].cb
-			cb.Resp = resp
-			cb.Txn = txn
 		}
 	}
-	p.proposals = nil
-	return applySnapResult
+	ready.CommittedEntries = nil
+	p.proposals = p.proposals[:0]
+}
+
+func (p *peer) findCallback(index, term uint64) *message.Callback {
+	for _, propose := range p.proposals {
+		if propose == nil {
+			break
+		}
+		if propose.index == index && propose.term == term && propose.cb.Resp == nil {
+			return propose.cb
+		}
+		if propose.cb.Resp == nil {
+			propose.cb.Done(ErrRespStaleCommand(term))
+		}
+	}
+	return nil
 }
 
 func (p *peer) proposeKvOp(cfg *config.Config, req *raft_cmdpb.RaftCmdRequest) (uint64, error) {
@@ -465,6 +496,7 @@ func (p *peer) proposeKvOp(cfg *config.Config, req *raft_cmdpb.RaftCmdRequest) (
 	if err != nil {
 		return 0, err
 	}
+	// fmt.Println("Propose req ", req)
 
 	proposeIndex := p.nextProposalIndex()
 	err = p.RaftGroup.Propose(data)
@@ -480,7 +512,7 @@ func (p *peer) proposeKvOp(cfg *config.Config, req *raft_cmdpb.RaftCmdRequest) (
 	return proposeIndex, nil
 }
 
-func (p *peer) proposeRaftCommand(cfg *config.Config, cb *message.Callback, req *raft_cmdpb.RaftCmdRequest, errResp *raft_cmdpb.RaftCmdResponse) bool {
+func (p *peer) Propose(cfg *config.Config, cb *message.Callback, req *raft_cmdpb.RaftCmdRequest, errResp *raft_cmdpb.RaftCmdResponse) bool {
 	if p.stopped {
 		return false
 	}
@@ -501,37 +533,18 @@ func (p *peer) proposeRaftCommand(cfg *config.Config, cb *message.Callback, req 
 	case RequestType_ConfChange:
 		return true
 	}
-	// fmt.Println(p.Region())
 
 	if err != nil {
 		BindRespError(errResp, err)
 		cb.Done(errResp)
 		return false
 	}
-	// response := []*raft_cmdpb.Response{&raft_cmdpb.Response{
-	// 	CmdType: req.Requests[0].CmdType}}
-	// // fmt.Println(response[0])
-	// if req.Requests[0].CmdType == raft_cmdpb.CmdType_Snap {
-	// 	response[0].Snap = &raft_cmdpb.SnapResponse{
-	// 		Region: p.Region(),
-	// 	}
-	// }
-	// cb.Resp = &raft_cmdpb.RaftCmdResponse{
-	// 	Header:    &raft_cmdpb.RaftResponseHeader{},
-	// 	Responses: response,
-	// }
-	// if req.Requests[0].CmdType == raft_cmdpb.CmdType_Delete || req.Requests[0].CmdType == raft_cmdpb.CmdType_Put {
-	// 	cb.Txn = p.peerStorage.Engines.Raft.NewTransaction(true)
-	// } else {
-	// 	cb.Txn = p.peerStorage.Engines.Raft.NewTransaction(false)
-	// }
 	proposal := &proposal{
 		index: index,
 		term:  p.Term(),
 		cb:    cb,
 	}
 	p.proposals = append(p.proposals, proposal)
-	fmt.Println("After proposeRaftCommand p.proposals ", p.proposals)
 	return true
 }
 
@@ -547,10 +560,10 @@ const (
 func (p *peer) GetRequestType(req *raft_cmdpb.RaftCmdRequest) (RequestType, error) {
 	if req.AdminRequest != nil {
 		if req.AdminRequest.ChangePeer != nil {
-			return RequestType_TransferLeader, nil
+			return RequestType_ConfChange, nil
 		}
 		if req.AdminRequest.TransferLeader != nil {
-			return RequestType_ConfChange, nil
+			return RequestType_TransferLeader, nil
 		}
 	}
 
@@ -594,6 +607,8 @@ func (p *peer) ApplyRaftCommand(req *raft_cmdpb.RaftCmdRequest, wb *engine_util.
 		}
 		resp = ErrResp(err)
 	}
+	// wb.PrintEntries()
+	wb.MustWriteToDB(p.peerStorage.Engines.Kv)
 	return resp, txn
 }
 
@@ -640,16 +655,43 @@ func (p *peer) RunRaftCommand(req *raft_cmdpb.RaftCmdRequest, wb *engine_util.Wr
 	return
 }
 
+// func (p *peer) TestScan(txn *badger.Txn) {
+// 	st := strconv.Itoa(0) + " " + fmt.Sprintf("%08d", 0)
+// 	ed := strconv.Itoa(0) + " " + fmt.Sprintf("%08d", 2)
+// 	start, end := []byte(st), []byte(ed)
+// 	values := make([][]byte, 0)
+// 	key := start
+// 	region := p.Region()
+// 	iter := raft_storage.NewRegionReader(txn, *region).IterCF(engine_util.CfDefault)
+// 	for iter.Seek(key); iter.Valid(); iter.Next() {
+// 		if engine_util.ExceedEndKey(iter.Item().Key(), end) {
+// 			break
+// 		}
+// 		value, err := iter.Item().ValueCopy(nil)
+// 		if err != nil {
+// 			panic(err)
+// 		}
+// 		values = append(values, value)
+// 	}
+// 	iter.Close()
+
+// 	key = region.EndKey
+// 	if len(key) == 0 {
+// 		break
+// 	}
+// }
+
 func (p *peer) RunPut(req *raft_cmdpb.PutRequest, wb *engine_util.WriteBatch) (*raft_cmdpb.Response, error) {
 	key, value := req.GetKey(), req.GetValue()
 	if err := util.CheckKeyInRegion(key, p.Region()); err != nil {
 		return nil, err
 	}
-
 	if cf := req.GetCf(); len(cf) != 0 {
 		wb.SetCF(cf, key, value)
+		// fmt.Println("Current leader is ", p.RaftGroup.Raft.Lead, " peer ", p.PeerId(), " RunPut key ", string(engine_util.KeyWithCF(cf, key)), " value ", string(value))
 	} else {
 		wb.SetCF(engine_util.CfDefault, key, value)
+		// fmt.Println("Current leader is ", p.RaftGroup.Raft.Lead, " peer ", p.PeerId(), " RunPut key ", string(engine_util.KeyWithCF(engine_util.CfDefault, key)), " value ", string(value))
 	}
 	return &raft_cmdpb.Response{
 		CmdType: raft_cmdpb.CmdType_Put,
@@ -665,14 +707,15 @@ func (p *peer) RunGet(req *raft_cmdpb.GetRequest) (*raft_cmdpb.Response, error) 
 	var err error
 	if cf := req.GetCf(); len(cf) != 0 {
 		val, err = engine_util.GetCF(p.peerStorage.Engines.Kv, cf, key)
+		// fmt.Println("Current Leader is ", p.RaftGroup.Raft.Lead, " RunGet key ", string(engine_util.KeyWithCF(cf, key)), " Get value ", string(val))
 	} else {
 		val, err = engine_util.GetCF(p.peerStorage.Engines.Kv, engine_util.CfDefault, key)
+		// fmt.Println("Current Leader is ", p.RaftGroup.Raft.Lead, " RunGet key ", string(engine_util.KeyWithCF(engine_util.CfDefault, key)), " Get value ", string(val))
 	}
 	if err == badger.ErrKeyNotFound {
 		err = nil
 		val = nil
 	}
-
 	return &raft_cmdpb.Response{
 		CmdType: raft_cmdpb.CmdType_Get,
 		Get:     &raft_cmdpb.GetResponse{Value: val},
@@ -687,8 +730,10 @@ func (p *peer) RunDelete(req *raft_cmdpb.DeleteRequest, wb *engine_util.WriteBat
 
 	if cf := req.GetCf(); len(cf) != 0 {
 		wb.DeleteCF(cf, key)
+		// fmt.Println("Current Leader is ", p.RaftGroup.Raft.Lead, " RunDelete key ", string(engine_util.KeyWithCF(cf, key)))
 	} else {
 		wb.DeleteCF(engine_util.CfDefault, key)
+		// fmt.Println("Current Leader is ", p.RaftGroup.Raft.Lead, " RunDelete key ", string(engine_util.KeyWithCF(engine_util.CfDefault, key)))
 	}
 	return &raft_cmdpb.Response{
 		CmdType: raft_cmdpb.CmdType_Delete,

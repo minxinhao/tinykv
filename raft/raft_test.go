@@ -307,9 +307,9 @@ func TestLogReplication2AB(t *testing.T) {
 
 func TestSingleNodeCommit2AB(t *testing.T) {
 	tt := newNetwork(nil)
-	tt.send(pb.Message{From: 1, To: 1, Term: tt.peers[1].(*Raft).Term, MsgType: pb.MessageType_MsgHup})
-	tt.send(pb.Message{From: 1, To: 1, Term: tt.peers[1].(*Raft).Term, MsgType: pb.MessageType_MsgPropose, Entries: []*pb.Entry{{Data: []byte("some data")}}})
-	tt.send(pb.Message{From: 1, To: 1, Term: tt.peers[1].(*Raft).Term, MsgType: pb.MessageType_MsgPropose, Entries: []*pb.Entry{{Data: []byte("some data")}}})
+	tt.send(pb.Message{From: 1, To: 1, MsgType: pb.MessageType_MsgHup})
+	tt.send(pb.Message{From: 1, To: 1, MsgType: pb.MessageType_MsgPropose, Entries: []*pb.Entry{{Data: []byte("some data")}}})
+	tt.send(pb.Message{From: 1, To: 1, MsgType: pb.MessageType_MsgPropose, Entries: []*pb.Entry{{Data: []byte("some data")}}})
 
 	sm := tt.peers[1].(*Raft)
 	if sm.RaftLog.committed != 3 {
@@ -1009,9 +1009,9 @@ func TestLeaderIncreaseNext2AB(t *testing.T) {
 	storage.Append(previousEnts)
 	sm := newTestRaft(1, []uint64{1, 2}, 10, 1, storage)
 	nt := newNetwork(sm, nil, nil)
-	nt.send(pb.Message{From: 1, To: 1, Term: nt.peers[1].(*Raft).Term, MsgType: pb.MessageType_MsgHup})
+	nt.send(pb.Message{From: 1, To: 1, MsgType: pb.MessageType_MsgHup})
 
-	nt.send(pb.Message{From: 1, To: 1, Term: nt.peers[1].(*Raft).Term, MsgType: pb.MessageType_MsgPropose, Entries: []*pb.Entry{{Data: []byte("somedata")}}})
+	nt.send(pb.Message{From: 1, To: 1, MsgType: pb.MessageType_MsgPropose, Entries: []*pb.Entry{{Data: []byte("somedata")}}})
 
 	p := sm.Prs[2]
 	if p.Next != wnext {
@@ -1475,13 +1475,13 @@ func TestSplitVote2AA(t *testing.T) {
 	n3.becomeFollower(1, None)
 
 	nt := newNetwork(n1, n2, n3)
-	nt.send(pb.Message{From: 1, To: 1, Term: nt.peers[1].(*Raft).Term, MsgType: pb.MessageType_MsgHup})
+	nt.send(pb.Message{From: 1, To: 1, MsgType: pb.MessageType_MsgHup})
 
 	// simulate leader down. followers start split vote.
 	nt.isolate(1)
 	nt.send([]pb.Message{
-		{From: 2, To: 2, Term: nt.peers[2].(*Raft).Term, MsgType: pb.MessageType_MsgHup},
-		{From: 3, To: 3, Term: nt.peers[3].(*Raft).Term, MsgType: pb.MessageType_MsgHup},
+		{From: 2, To: 2, MsgType: pb.MessageType_MsgHup},
+		{From: 3, To: 3, MsgType: pb.MessageType_MsgHup},
 	}...)
 
 	// check whether the term values are expected
@@ -1509,7 +1509,7 @@ func TestSplitVote2AA(t *testing.T) {
 	}
 
 	// node 2 election timeout first
-	nt.send(pb.Message{From: 2, To: 2, Term: nt.peers[2].(*Raft).Term, MsgType: pb.MessageType_MsgHup})
+	nt.send(pb.Message{From: 2, To: 2, MsgType: pb.MessageType_MsgHup})
 
 	// check whether the term values are expected
 	// n2.Term == 4

@@ -178,17 +178,17 @@ func (l *RaftLog) Term(i uint64) (uint64, error) {
 		return l.snapLastTerm, nil
 	}
 
-	if i < l.snapLastIndex {
+	if i <= l.snapLastIndex {
 		return 0, ErrCompacted
 	}
 	if len(l.entries) == 0 {
 		return 0, ErrCompacted
 	}
 
-	if i > l.LastIndex() {
+	if i > l.snapLastIndex+uint64(len(l.entries)) {
 		return 0, ErrUnavailable
 	}
-	return l.entries[i-l.FirstIndex()].Term, nil
+	return l.entries[i-l.snapLastIndex-1].Term, nil
 }
 
 func (l *RaftLog) slice(lo, hi uint64) ([]pb.Entry, error) {

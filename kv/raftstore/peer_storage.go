@@ -368,12 +368,14 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 		ps.clearExtraData(snapData.Region)
 	}
 
+	applyResult := &ApplySnapResult{
+		PrevRegion: ps.region,
+		Region:     snapData.Region,
+	}
 	ps.region = snapData.Region
 	ps.raftState.LastIndex = snapshot.Metadata.Index
 	ps.raftState.LastTerm = snapshot.Metadata.Term
-	ps.snapState = snap.SnapState{
-		StateType: snap.SnapState_Applying,
-	}
+
 	applyState := &rspb.RaftApplyState{
 		AppliedIndex: snapshot.Metadata.Index,
 		TruncatedState: &rspb.RaftTruncatedState{
@@ -383,7 +385,9 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 	}
 	kvWB.SetMeta(meta.ApplyStateKey(ps.region.GetId()), applyState)
 	meta.WriteRegionState(kvWB, snapData.Region, rspb.PeerState_Normal)
-
+	ps.snapState = snap.SnapState{
+		StateType: snap.SnapState_Applying,
+	}
 	chan_regionSched := make(chan bool)
 	ps.regionSched <- &runner.RegionTaskApply{
 		RegionId: ps.region.Id,
@@ -394,10 +398,6 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 	}
 	<-chan_regionSched
 
-	applyResult := &ApplySnapResult{
-		PrevRegion: ps.region,
-		Region:     snapData.Region,
-	}
 	return applyResult, nil
 }
 
@@ -433,8 +433,10 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 	if !proto.Equal(&prevRaftState, &ps.raftState) {
 		raftWB.SetMeta(meta.RaftStateKey(ps.region.GetId()), &ps.raftState)
 	}
-
+	// fmt.Println("SaveReadyState Write KV")
+	// kvWB.PrintEntries()
 	kvWB.MustWriteToDB(ps.Engines.Kv)
+	// fmt.Println("Write To Raft")
 	raftWB.MustWriteToDB(ps.Engines.Raft)
 
 	return applyRes, nil
