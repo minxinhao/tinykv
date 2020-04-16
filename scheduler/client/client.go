@@ -554,6 +554,7 @@ type TSFuture interface {
 func (req *tsoRequest) Wait() (physical int64, logical int64, err error) {
 	// If tso command duration is observed very high, the reason could be it
 	// takes too long for Wait() be called.
+
 	select {
 	case err = <-req.done:
 		err = errors.WithStack(err)

@@ -73,6 +73,7 @@ type peer struct {
 	// * raft log gc
 	// * region heartbeat
 	// * split check
+	opCnt  uint64
 	ticker *ticker
 	// Instance of the Raft module
 	RaftGroup *raft.RawNode
@@ -154,6 +155,7 @@ func NewPeer(storeId uint64, cfg *config.Config, engines *engine_util.Engines, r
 		PeersStartPendingTime: make(map[uint64]time.Time),
 		Tag:                   tag,
 		ticker:                newTicker(region.GetId(), cfg),
+		opCnt:                 0,
 	}
 	// fmt.Println("fine NewPeer")
 
@@ -412,7 +414,7 @@ func (p *peer) HandleRaftReady(pdScheduler chan<- worker.Task, trans Transport) 
 		return nil
 	}
 	if !p.RaftGroup.HasReady() {
-		fmt.Println(p.PeerId(), " has no ready")
+		// fmt.Println(p.PeerId(), " has no ready")
 		return nil
 	}
 	ready := p.RaftGroup.Ready()
@@ -433,8 +435,8 @@ func (p *peer) HandleRaftReady(pdScheduler chan<- worker.Task, trans Transport) 
 		panic(err)
 	}
 
-	fmt.Println(p.PeerId(), " get  ready ", ready)
-
+	// fmt.Println(p.PeerId(), " get  ready ", ready.CommittedEntries)
+	p.ShowReady(&ready)
 	if len(ready.CommittedEntries) == 0 {
 		fmt.Println(p.PeerId(), " get ready with empty CommittedEntries")
 	}
@@ -447,6 +449,19 @@ func (p *peer) HandleRaftReady(pdScheduler chan<- worker.Task, trans Transport) 
 	return applySnapResult
 }
 
+func (p *peer) ShowReady(ready *raft.Ready) {
+	fmt.Println(p.PeerId(), "op ", p.opCnt, " get  ready with  ", len(ready.CommittedEntries), " entries")
+	for _, entry := range ready.CommittedEntries {
+		req := new(raft_cmdpb.RaftCmdRequest)
+		err := req.Unmarshal(entry.Data)
+		if err != nil {
+			fmt.Println("fail marsh to request command")
+		} else {
+			fmt.Println(p.PeerId(), "op ", p.opCnt, "get req ", req)
+		}
+	}
+	p.opCnt++
+}
 func (p *peer) ApplyReady(ready *raft.Ready) {
 	for _, entry := range ready.CommittedEntries {
 
@@ -455,7 +470,7 @@ func (p *peer) ApplyReady(ready *raft.Ready) {
 		if err != nil {
 			panic(err)
 		}
-		fmt.Println(p.PeerId(), " HandleReady get req ", req)
+		// fmt.Println(p.PeerId(), "op ", p.opCnt, " HandleReady get req ", req)
 		resp, txn := p.ApplyRaftCommand(req, new(engine_util.WriteBatch))
 		if p.proposals == nil || len(p.proposals) == 0 {
 			// fmt.Println(p.PeerId(), " exits handleready with empty proposal  ")

@@ -214,7 +214,7 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 		atomic.StoreInt32(&done_clients, 0)
 		atomic.StoreInt32(&done_partitioner, 0)
 		// fmt.Println("fine")
-		fmt.Println("client ", i, "start ")
+		// fmt.Println("client ", i, "start ")
 		go SpawnClientsAndWait(t, ch_clients, nclients, func(cli int, t *testing.T) {
 			j := 0
 			defer func() {
@@ -228,6 +228,10 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 				cluster.MustPut([]byte(key), []byte(value))
 				last = NextValue(last, value)
 				cluster.MustGet([]byte(key), []byte(value))
+				values := cluster.Scan([]byte("0"), []byte("zzzzzzz"))
+				v := string(bytes.Join(values, []byte("")))
+				fmt.Println("scan to get all values ", v)
+				checkClntAppends(t, cli, v, j)
 				j++
 				// if (rand.Int() % 1000) < 500 {
 				// 	key := strconv.Itoa(cli) + " " + fmt.Sprintf("%08d", j)
@@ -303,7 +307,9 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 			start := strconv.Itoa(cli) + " " + fmt.Sprintf("%08d", 0)
 			end := strconv.Itoa(cli) + " " + fmt.Sprintf("%08d", j)
 			values := cluster.Scan([]byte(start), []byte(end))
+			// values := cluster.Scan([]byte("0"), []byte("zzzzzzz"))
 			v := string(bytes.Join(values, []byte("")))
+			// fmt.Println("scan to get all values ", v)
 			checkClntAppends(t, cli, v, j)
 
 			for k := 0; k < j; k++ {

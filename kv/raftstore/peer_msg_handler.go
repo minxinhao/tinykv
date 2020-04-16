@@ -45,7 +45,8 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	// Your Code Here (2B).
 	applySnapResult := d.peer.HandleRaftReady(d.ctx.schedulerTaskSender, d.ctx.trans)
 	if applySnapResult != nil {
-		fmt.Println("HandleRaftReady applySnapResult != nil")
+		// fmt.Println("HandleRaftReady applySnapResult != nil")
+
 		prevRegion := applySnapResult.PrevRegion
 		region := applySnapResult.Region
 		meta := d.ctx.storeMeta
@@ -61,6 +62,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 }
 
 func (d *peerMsgHandler) HandleMsg(msg message.Msg) {
+	d.peer.opCnt++
 	switch msg.Type {
 	case message.MsgTypeRaftMessage:
 		raftMsg := msg.Data.(*rspb.RaftMessage)
@@ -218,6 +220,7 @@ func (d *peerMsgHandler) onRaftMsg(msg *rspb.RaftMessage) error {
 		d.ctx.snapMgr.DeleteSnapshot(*key, s, false)
 		return nil
 	}
+
 	d.insertPeerCache(msg.GetFromPeer())
 	err = d.RaftGroup.Step(*msg.GetMessage())
 	if err != nil {

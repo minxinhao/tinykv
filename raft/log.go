@@ -247,6 +247,10 @@ func (l *RaftLog) AppendEntries(ents []pb.Entry) uint64 {
 		l.entries = append(l.entries, ents...)
 		return l.LastIndex()
 	}
+	if after > l.LastIndex()+1 {
+		// fmt.Println("AppendEntries get entries jump over some index from ", l.LastIndex(), "to ", after)
+		panic("raftLog AppendEntries cause lack of entry")
+	}
 	// fmt.Println("Append Entries replaced prev entries")
 
 	if after-1 < l.stabled {
@@ -273,6 +277,10 @@ func (l *RaftLog) Append(index, term, committed uint64, entries ...pb.Entry) (la
 		}
 		commit_index := min(committed, last_index)
 		if l.committed < commit_index {
+			if l.LastIndex() < commit_index {
+				// fmt.Println("commit_index ", commit_index, "excceed LastIndex ", l.LastIndex())
+				panic("commit_index excceed LastIndex ")
+			}
 			l.committed = commit_index
 		}
 		return last_index, true

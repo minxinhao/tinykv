@@ -22,6 +22,7 @@ import (
 	"time"
 
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+	"github.com/pingcap-incubator/tinykv/proto/pkg/raft_cmdpb"
 )
 
 // None is a placeholder node ID used when there is no leader.
@@ -328,6 +329,7 @@ func (r *Raft) fresh() {
 // becomeFollower transform this peer's state to Follower
 func (r *Raft) becomeFollower(term uint64, lead uint64) {
 	// Your Code Here (2A).
+	fmt.Println("Become Follower ", r.id)
 	r.fresh()
 	if term > r.Term {
 		r.Term = term
@@ -340,6 +342,7 @@ func (r *Raft) becomeFollower(term uint64, lead uint64) {
 // becomeCandidate transform this peer's state to candidate
 func (r *Raft) becomeCandidate() {
 	// Your Code Here (2A).
+	fmt.Println("Become Candidate ", r.id)
 	r.fresh()
 	r.Term += 1
 	r.Vote = r.id
@@ -349,7 +352,7 @@ func (r *Raft) becomeCandidate() {
 // becomeLeader transform this peer's state to leader
 func (r *Raft) becomeLeader() {
 	// Your Code Here (2A).
-	// fmt.Println("Become Leader ", r.id)
+	fmt.Println("Become Leader ", r.id)
 	r.fresh()
 	r.Lead = r.id
 	r.State = StateLeader
@@ -391,6 +394,9 @@ func (r *Raft) Step(m pb.Message) error {
 
 	// Rules for all servers
 	if m.Term < r.Term && m.MsgType != pb.MessageType_MsgHup && m.MsgType != pb.MessageType_MsgPropose && m.MsgType != pb.MessageType_MsgBeat {
+		if m.MsgType == pb.MessageType_MsgAppend {
+			// fmt.Println(r.id, " reject append msg for term msg  ", m)
+		}
 		return nil
 	}
 	if m.Term == r.Term && m.MsgType == pb.MessageType_MsgAppend && r.Vote == m.From {
@@ -643,8 +649,8 @@ func (r *Raft) FollowerStep(m pb.Message) error {
 	case pb.MessageType_MsgAppend:
 		if m.Term < r.Term {
 			//Invalid Leader
-			fmt.Println(r.id, " reject append msg for term msg ", m)
-			r.send(pb.Message{To: m.From, MsgType: pb.MessageType_MsgAppendResponse, Term: r.Term, Reject: true})
+			// fmt.Println(r.id, " reject append msg for term msg ", m)
+			r.send(pb.Message{To: m.From, MsgType: pb.MessageType_MsgAppendResponse, Term: r.Term})
 			return nil
 		}
 		r.electionElapsed = 0
@@ -681,11 +687,25 @@ func (r *Raft) FollowerStep(m pb.Message) error {
 	return nil
 }
 
+func (r *Raft) ShowEntries(entries []pb.Entry) {
+	for _, entry := range entries {
+		req := new(raft_cmdpb.RaftCmdRequest)
+		err := req.Unmarshal(entry.Data)
+		if err != nil {
+			fmt.Println("fail marsh to request command")
+		} else {
+			fmt.Println(req)
+		}
+	}
+}
+
 // handleAppendEntries handle AppendEntries RPC request
 func (r *Raft) handleAppendEntries(m pb.Message) {
 	// Your Code Here (2A).
 	if m.Index < r.RaftLog.committed {
-		fmt.Println(r.id, "reject append msg ", m)
+		// fmt.Println(r.id, "reject append msg  ", m)
+		// fmt.Println(r.id, "'s committed is ", r.RaftLog.committed)
+		// r.ShowEntries(r.RaftLog.entries)
 		r.send(pb.Message{To: m.From, MsgType: pb.MessageType_MsgAppendResponse, Index: r.RaftLog.committed})
 		return
 	}
@@ -694,10 +714,13 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	for _, ent := range m.Entries {
 		entries = append(entries, *ent)
 	}
+
 	// fmt.Println("handleAppendEntries Index", m.Index, "LogTerm ", m.LogTerm)
 	if lastIndex, ok := r.RaftLog.Append(m.Index, m.LogTerm, m.Commit, entries...); ok {
+		fmt.Println(r.id, " success to append entries ", m)
 		r.send(pb.Message{To: m.From, MsgType: pb.MessageType_MsgAppendResponse, Index: lastIndex})
 	} else {
+		fmt.Println(r.id, " fail to append entries ", m)
 		r.send(pb.Message{To: m.From, MsgType: pb.MessageType_MsgAppendResponse, Index: m.Index, Reject: true})
 	}
 
