@@ -512,6 +512,7 @@ func (r *Raft) LeaderStep(m pb.Message) error {
 			}
 			r.sendHeartbeat(id)
 		}
+		return nil
 	case pb.MessageType_MsgPropose:
 		// fmt.Println("Leader step MessageType_MsgPropose ", m)
 		if len(m.Entries) == 0 {
@@ -527,9 +528,9 @@ func (r *Raft) LeaderStep(m pb.Message) error {
 		}
 
 		r.AppendEntry(entries...)
-		if len(r.Prs) != 5 {
-			// panic("sendAppend without full peers")
-		}
+		// if len(r.Prs) != 5 {
+		// panic("sendAppend without full peers")
+		// }
 		for id, _ := range r.Prs {
 			if id == r.id {
 				continue
@@ -598,7 +599,7 @@ func (r *Raft) CanditateStep(m pb.Message) error {
 	case pb.MessageType_MsgHup:
 		r.StepMsgHup()
 	case pb.MessageType_MsgPropose:
-		// return ErrProposalDropped
+		return ErrProposalDropped
 	case pb.MessageType_MsgAppend:
 		// When it enters here,m.Term==r.Term
 		// There is a valid leader occur
@@ -645,7 +646,7 @@ func (r *Raft) FollowerStep(m pb.Message) error {
 	case pb.MessageType_MsgHup:
 		r.StepMsgHup()
 	case pb.MessageType_MsgPropose:
-		// return ErrProposalDropped
+		return ErrProposalDropped
 	case pb.MessageType_MsgAppend:
 		if m.Term < r.Term {
 			//Invalid Leader
@@ -741,6 +742,42 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 // handleSnapshot handle Snapshot RPC request
 func (r *Raft) handleSnapshot(m pb.Message) {
 	// Your Code Here (2C).
+	s := *m.Snapshot
+	applyflag := true
+	if s.Metadata.Index <= r.RaftLog.committed {
+		applyflag = false
+	}
+	if r.RaftLog.matchForTerm(s.Metadata.Index, s.Metadata.Term) {
+		if r.RaftLog.committed < s.Metadata.Index {
+			if r.RaftLog.LastIndex() < s.Metadata.Index {
+				// fmt.Println("s.Metadata.Index ", s.Metadata.Index, "excceed LastIndex ", r.RaftLog.LastIndex())
+				panic("s.Metadata.Index excceed LastIndex ")
+			}
+			r.RaftLog.committed = s.Metadata.Index
+		}
+		applyflag = false
+	}
+	r.RaftLog.committed = s.Metadata.Index
+	r.RaftLog.entries = nil
+	r.RaftLog.stabled = s.Metadata.Index
+	r.RaftLog.snapLastIndex = s.Metadata.Index
+	r.RaftLog.snapLastTerm = s.Metadata.Term
+	r.RaftLog.pendingSnapshot = &s
+
+	r.Prs = make(map[uint64]*Progress)
+	for _, n := range s.Metadata.ConfState.Nodes {
+		match, next := uint64(0), r.RaftLog.LastIndex()+1
+		if n == r.id {
+			match = next - 1
+		}
+		r.Prs[n] = &Progress{Next: next, Match: match}
+	}
+
+	if applyflag {
+		r.send(pb.Message{To: m.From, MsgType: pb.MessageType_MsgAppendResponse, Index: r.RaftLog.LastIndex()})
+	} else {
+		r.send(pb.Message{To: m.From, MsgType: pb.MessageType_MsgAppendResponse, Index: r.RaftLog.committed})
+	}
 }
 
 // addNode add a new node to raft group
