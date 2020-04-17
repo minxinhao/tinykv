@@ -148,7 +148,8 @@ type Raft struct {
 	electionElapsed int
 
 	// leadTransferee is id of the leader transfer target when its value is not zero.
-	// Follow the procedure defined in raft thesis 3.10.
+	// Follow the procedure defined in section 3.10 of Raft phd thesis.
+	// (https://web.stanford.edu/~ouster/cgi-bin/papers/OngaroPhD.pdf)
 	// (Used in 3A leader transfer)
 	leadTransferee uint64
 
@@ -352,6 +353,7 @@ func (r *Raft) becomeCandidate() {
 // becomeLeader transform this peer's state to leader
 func (r *Raft) becomeLeader() {
 	// Your Code Here (2A).
+<<<<<<< HEAD
 	fmt.Println("Become Leader ", r.id)
 	r.fresh()
 	r.Lead = r.id
@@ -385,6 +387,9 @@ func (r *Raft) AppendEntry(es ...pb.Entry) {
 	sort.Sort(matchIndexs)
 	max_consist_index := matchIndexs[len(matchIndexs)-r.VoteThreshold()]
 	r.RaftLog.Commit(max_consist_index, r.Term)
+=======
+	// NOTE: Leader should propose a noop entry on its term
+>>>>>>> 320272129d3dcafb6b96ef122dfe6222b6fa3c84
 }
 
 // Step the entrance of handle message, see `MessageType`

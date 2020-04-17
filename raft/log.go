@@ -42,10 +42,16 @@ type RaftLog struct {
 	// Invariant: applied <= committed
 	applied uint64
 
+<<<<<<< HEAD
 	// log entries with index <= stabled are stabled to storage
 	// Not very understanding the meaning of stable here
 	// What is the relationship between stabled and commited?
 	// I thought snapshot was only aimed at logs that were already commited.
+=======
+	// log entries with index <= stabled are persisted to storage.
+	// It is used to record the logs that are not persisted by storage yet.
+	// Everytime handling `Ready`, the unstabled logs will be included.
+>>>>>>> 320272129d3dcafb6b96ef122dfe6222b6fa3c84
 	stabled uint64
 
 	// all entries that have not yet compact.
