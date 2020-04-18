@@ -464,31 +464,54 @@ func (p *peer) ShowReady(ready *raft.Ready) {
 }
 func (p *peer) ApplyReady(ready *raft.Ready) {
 	for _, entry := range ready.CommittedEntries {
-
-		req := new(raft_cmdpb.RaftCmdRequest)
-		err := req.Unmarshal(entry.Data)
-		if err != nil {
-			panic(err)
-		}
-		// fmt.Println(p.PeerId(), "op ", p.opCnt, " HandleReady get req ", req)
-		resp, txn := p.ApplyRaftCommand(req, new(engine_util.WriteBatch))
-		if p.proposals == nil || len(p.proposals) == 0 {
-			// fmt.Println(p.PeerId(), " exits handleready with empty proposal  ")
-			break
-		} else {
-			cb := p.findCallback(entry.Index, entry.Term)
-			if cb == nil {
-				// fmt.Println("No match callback for index ", entry.Index, " term ", entry.Term, "with resp ", resp)
+		if len(entry.Data) > 0 {
+			req := new(raft_cmdpb.RaftCmdRequest)
+			err := req.Unmarshal(entry.Data)
+			if err != nil {
+				panic(err)
+			}
+			// fmt.Println(p.PeerId(), "op ", p.opCnt, " HandleReady get req ", req)
+			resp, txn := p.ApplyRaftCommand(req, new(engine_util.WriteBatch))
+			if p.proposals == nil || len(p.proposals) == 0 {
+				// fmt.Println(p.PeerId(), " exits handleready with empty proposal  ")
+				break
 			} else {
-				cb.Resp = resp
-				cb.Txn = txn
-				cb.Done(resp)
-				// fmt.Printf("Set callback with %v\n", resp)
+				cb := p.findCallback(entry.Index, entry.Term)
+				if cb == nil {
+					// fmt.Println("No match callback for index ", entry.Index, " term ", entry.Term, "with resp ", resp)
+				} else {
+					cb.Resp = resp
+					cb.Txn = txn
+					cb.Done(resp)
+					// fmt.Printf("Set callback with %v\n", resp)
+				}
+			}
+		} else {
+			//Deal with empty entry send by new leader
+			for _, proposal := range p.proposals {
+				if proposal.term >= entry.Term {
+					break
+				}
+				proposal.cb.Txn = nil
+				proposal.cb.Done(ErrRespStaleCommand(entry.Term))
 			}
 		}
+
 	}
 	ready.CommittedEntries = nil
 	p.proposals = p.proposals[:0]
+}
+
+func (p *peer) popProposal(term uint64) *proposal {
+	if len(p.proposals) == 0 {
+		return nil
+	}
+	proposal := p.proposals[0]
+	if proposal.term > term {
+		return nil
+	}
+	p.proposals = p.proposals[1:]
+	return proposal
 }
 
 func (p *peer) findCallback(index, term uint64) *message.Callback {
