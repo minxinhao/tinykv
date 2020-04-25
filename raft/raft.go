@@ -717,10 +717,10 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 
 	// fmt.Println("handleAppendEntries Index", m.Index, "LogTerm ", m.LogTerm)
 	if lastIndex, ok := r.RaftLog.Append(m.Index, m.LogTerm, m.Commit, entries...); ok {
-		fmt.Println(r.id, " success to append entries ", m)
+		// fmt.Println(r.id, " success to append entries ", m)
 		r.send(pb.Message{To: m.From, MsgType: pb.MessageType_MsgAppendResponse, Index: lastIndex})
 	} else {
-		fmt.Println(r.id, " fail to append entries ", m)
+		// fmt.Println(r.id, " fail to append entries ", m)
 		r.send(pb.Message{To: m.From, MsgType: pb.MessageType_MsgAppendResponse, Index: m.Index, Reject: true})
 	}
 

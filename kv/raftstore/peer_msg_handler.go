@@ -38,27 +38,18 @@ func newPeerMsgHandler(peer *peer, ctx *GlobalContext) *peerMsgHandler {
 	}
 }
 
+type ApplyProposal struct {
+	Id       uint64
+	RegionId uint64
+	Props    []*proposal
+}
+
 func (d *peerMsgHandler) HandleRaftReady() {
 	if d.peer.stopped {
 		return
 	}
 	// Your Code Here (2B).
-	applySnapResult := d.peer.HandleRaftReady(d.ctx.schedulerTaskSender, d.ctx.trans)
-	if applySnapResult != nil {
-		// fmt.Println("HandleRaftReady applySnapResult != nil")
-
-		prevRegion := applySnapResult.PrevRegion
-		region := applySnapResult.Region
-		meta := d.ctx.storeMeta
-		initialized := len(prevRegion.Peers) > 0
-		if initialized {
-			meta.regionRanges.Delete(&regionItem{region: prevRegion})
-		}
-		if oldRegion := meta.regionRanges.ReplaceOrInsert(&regionItem{region: region}); oldRegion != nil {
-			panic(errors.New("Unexpected oldRegion in meta.regionRanges "))
-		}
-		meta.regions[region.Id] = region
-	}
+	d.peer.HandleRaftReady(d.ctx.schedulerTaskSender, d.ctx.trans)
 }
 
 func (d *peerMsgHandler) HandleMsg(msg message.Msg) {

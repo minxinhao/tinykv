@@ -313,6 +313,8 @@ func ClearMeta(engines *engine_util.Engines, kvWB, raftWB *engine_util.WriteBatc
 // never be committed
 func (ps *PeerStorage) Append(entries []eraftpb.Entry, raftWB *engine_util.WriteBatch) error {
 	// Your Code Here (2B).
+	fmt.Printf("%s append %d entries \n", ps.Tag, len(entries))
+
 	if len(entries) == 0 {
 		return nil
 	}
@@ -352,6 +354,8 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 
 	// // current snapshot state
 	// snapState snap.SnapState
+
+	fmt.Println(ps.Tag, " applysnapshot ")
 
 	snapData := new(rspb.RaftSnapshotData)
 	if err := snapData.Unmarshal(snapshot.Data); err != nil {
@@ -423,13 +427,14 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 		}
 	}
 
+	prevRaftState := ps.raftState
+
 	if ps.raftState.LastIndex > 0 {
 		if !raft.IsEmptyHardState(ready.HardState) {
 			ps.raftState.HardState = &ready.HardState
 		}
 	}
 
-	prevRaftState := ps.raftState
 	if !proto.Equal(&prevRaftState, &ps.raftState) {
 		raftWB.SetMeta(meta.RaftStateKey(ps.region.GetId()), &ps.raftState)
 	}
