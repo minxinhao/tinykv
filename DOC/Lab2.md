@@ -217,3 +217,12 @@ Here are some hints for this step:
 
 If there are some committed entries to be executed in the apply worker, do not apply state, see `ReadyToHandlePendingSnap`.
 Do not handle next Raft ready before finishing apply snapshot.
+
+#### Notes
+
+1. After that, schedule a task to raftlog-gc worker located in `kv/raftstore/runner/raftlog_gc.go`. Raftlog-gc worker will do the actual log deletion work asynchronously. 
+> 还是不明白怎么发送task,没看见raftLogGCTaskHandler的taskResCh怎么传递到peer。同时raftLogGCTaskHandler在batch_system中被创建，传递链一直到raft_server里面？感觉是不是可以提示一下怎么传递。
+> 好像只有像ScheduleCompactLog那样通过ctx.router来发送gcTask？不说清楚的话我觉得不一定知道是要调用这个函数
+2. 不存在ReadyToHandlePendingSnap
+3. Then the snapshot will reflect in the next Raft ready, so the task you should do is to modify the raft ready process to handle the case of snapshot. When you are sure to apply the snapshot, you can update the peer storage’s memory state like `RaftLocalState`, `RaftApplyState` and `RegionLocalState`. Also don’t forget to persist these states to kvdb and raftdb and remove stale state from kvdb and raftdb.
+> 这一部分是2B完成了吗？

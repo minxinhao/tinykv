@@ -49,7 +49,57 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		return
 	}
 	// Your Code Here (2B).
-	d.peer.HandleRaftReady(d.ctx.schedulerTaskSender, d.ctx.trans)
+	applySnapResult := d.peer.HandleRaftReady(d.ctx.schedulerTaskSender, d.ctx.trans)
+	if applySnapResult != nil {
+		prevRegion := applySnapResult.PrevRegion
+		region := applySnapResult.Region
+
+		fmt.Printf("%s snapshot for region %s has been applied", d.Tag, region)
+		meta := d.ctx.storeMeta
+		initialized := len(prevRegion.Peers) > 0
+		if initialized {
+			meta.regionRanges.Delete(&regionItem{region: prevRegion})
+		}
+		if oldRegion := meta.regionRanges.ReplaceOrInsert(&regionItem{region: region}); oldRegion != nil {
+			panic("Snapshot with old region")
+		}
+		meta.regions[region.Id] = region
+	}
+
+	if len(d.peer.applyData.applyTaskResList) > 0 {
+		ad := d.peer.applyData
+		if err := ad.wb.WriteToDB(d.peerStorage.Engines.Kv); err != nil {
+			panic(err)
+		}
+		ad.wb.Reset()
+		for _, cb := range ad.cbs {
+			for _, cb_res := range cb.cbs {
+				if cb_res != nil {
+					cb_res.Done(nil)
+				}
+			}
+		}
+		ad.cbs = ad.cbs[:0]
+
+		for _, res := range ad.applyTaskResList {
+			d.onApplyResult(res)
+		}
+		ad.applyTaskResList = ad.applyTaskResList[:0]
+	}
+}
+
+func (d *peerMsgHandler) onApplyResult(res *ApplyRes) {
+	for _, result := range res.runResults {
+		switch x := result.(type) {
+		case *resultCompactLog:
+			d.ScheduleCompactLog(x.firstIndex, x.truncatedIndex)
+		default:
+		}
+	}
+	res.runResults = nil
+	if d.stopped {
+		return
+	}
 }
 
 func (d *peerMsgHandler) HandleMsg(msg message.Msg) {

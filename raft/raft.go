@@ -785,3 +785,7 @@ func (r *Raft) HardState() pb.HardState {
 		Commit: r.RaftLog.committed,
 	}
 }
+
+func (r *Raft) GetSnap() *pb.Snapshot {
+	return r.RaftLog.pendingSnapshot
+}

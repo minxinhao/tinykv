@@ -88,12 +88,14 @@ type peer struct {
 
 	// Record the callback of the proposals
 	// (Used in 2B)
-	proposals   []*proposal
-	applyResult *applyResult
+	proposals []*proposal
+	applyData *applyData
 
 	// Index of last scheduled compacted raft log.
 	// (Used in 2C)
 	LastCompactedIdx uint64
+	// Index of last scheduled committed raft log.
+	LastApplyingIdx uint64
 
 	// Cache the peers information from other stores
 	// when sending raft messages to other peers, it's used to get the store id of target peer
@@ -157,7 +159,7 @@ func NewPeer(storeId uint64, cfg *config.Config, engines *engine_util.Engines, r
 		Tag:                   tag,
 		ticker:                newTicker(region.GetId(), cfg),
 		opCnt:                 0,
-		applyResult:           new(applyResult),
+		applyData:             new(applyData),
 	}
 	// fmt.Println("fine NewPeer")
 
@@ -517,8 +519,17 @@ func notifyStaleCommand(regionID, peerID, term uint64, pro proposal) {
 	pro.cb.Done(ErrRespStaleCommand(term))
 }
 
+func (p *peer) ReadyToHandlePendingSnap() bool {
+	return p.LastApplyingIdx == p.peerStorage.AppliedIndex()
+}
+
 func (p *peer) HandleRaftReady(pdScheduler chan<- worker.Task, trans Transport) *ApplySnapResult {
 	if p.stopped {
+		return nil
+	}
+
+	if p.RaftGroup.Raft.GetSnap() != nil && !p.ReadyToHandlePendingSnap() {
+		fmt.Printf("%v with apply_id: %v and last_applying_idx: %v can't handle snapshot", p.Tag, p.peerStorage.AppliedIndex(), p.LastApplyingIdx)
 		return nil
 	}
 
@@ -526,7 +537,7 @@ func (p *peer) HandleRaftReady(pdScheduler chan<- worker.Task, trans Transport) 
 		return nil
 	}
 
-	log.Debugf("%v handle raftready", p.Tag)
+	fmt.Printf("%v handle raftready", p.Tag)
 
 	ready := p.RaftGroup.Ready()
 	if ready.Snapshot.GetMetadata() == nil {
@@ -546,15 +557,27 @@ func (p *peer) HandleRaftReady(pdScheduler chan<- worker.Task, trans Transport) 
 		panic(fmt.Sprintf("Error occur in handling raftready: %v", err))
 	}
 
-	committedEntries := ready.CommittedEntries
-	ready.CommittedEntries = nil
-	l := len(committedEntries)
-
 	p.RaftGroup.Advance(ready)
-	if l > 0 {
-		p.handleApply(committedEntries)
+	if applySnapResult != nil {
+		p.handleApllySnap()
+		p.LastApplyingIdx = p.peerStorage.truncatedIndex()
+	} else {
+		committedEntries := ready.CommittedEntries
+		ready.CommittedEntries = nil
+		l := len(committedEntries)
+		if l > 0 {
+			p.handleApply(committedEntries)
+		}
 	}
 	return applySnapResult
+}
+
+func (p *peer) handleApllySnap() {
+	log.Infof("%s accept snapshot with %d", p.Tag, p.Term())
+	for _, pro := range p.proposals {
+		notifyStaleCommand(p.regionId, p.PeerId(), p.Term(), *pro)
+	}
+	p.proposals = p.proposals[:0]
 }
 
 type applyCallback struct {
@@ -562,62 +585,104 @@ type applyCallback struct {
 	cbs    []*message.Callback
 }
 
-type applyResult struct {
+type ApplyRes struct {
+	regionID   uint64
+	runResults []runResult
+}
+
+type applyData struct {
 	wb               *engine_util.WriteBatch
 	applyState       rspb.RaftApplyState
 	lastAppliedIndex uint64
 	cbs              []applyCallback
+	applyTaskResList []*ApplyRes
 }
 
-func (ar *applyResult) initApplyResult(p *peer) {
-	if ar.wb == nil {
-		ar.wb = new(engine_util.WriteBatch)
+type applyResultType int
+
+const (
+	applyResultTypeNone      applyResultType = 0
+	applyResultTypeRunResult applyResultType = 1
+)
+
+type applyResult struct {
+	resultType applyResultType
+	data       interface{}
+}
+
+type runResult = interface{}
+
+type resultCompactLog struct {
+	truncatedIndex uint64
+	firstIndex     uint64
+}
+
+func (ad *applyData) initApplyResult(p *peer) {
+	if ad.wb == nil {
+		ad.wb = new(engine_util.WriteBatch)
 	}
-	ar.cbs = append(ar.cbs, applyCallback{region: p.Region()})
+	ad.cbs = append(ad.cbs, applyCallback{region: p.Region()})
 	applyState, _ := meta.GetApplyState(p.peerStorage.Engines.Kv, p.Region().GetId())
-	ar.applyState = *applyState
-	ar.lastAppliedIndex = applyState.AppliedIndex
+	ad.applyState = *applyState
+	ad.lastAppliedIndex = applyState.AppliedIndex
 }
 
-func (ar *applyResult) applyToPeer(p *peer) {
-	if ar.lastAppliedIndex < ar.applyState.AppliedIndex {
-		ar.wb.SetMeta(meta.ApplyStateKey(p.Region().GetId()), &ar.applyState)
+func (ad *applyData) applyToPeer(p *peer) {
+	if ad.lastAppliedIndex < ad.applyState.AppliedIndex {
+		ad.wb.SetMeta(meta.ApplyStateKey(p.Region().GetId()), &ad.applyState)
 
 	}
-	if err := ar.wb.WriteToDB(p.peerStorage.Engines.Kv); err != nil {
+	if err := ad.wb.WriteToDB(p.peerStorage.Engines.Kv); err != nil {
 		panic(err)
 	}
-	ar.wb.Reset()
+	ad.wb.Reset()
 
-	for _, cb := range ar.cbs {
+	for _, cb := range ad.cbs {
 		for _, cb_res := range cb.cbs {
 			if cb_res != nil {
 				cb_res.Done(nil)
 			}
 		}
 	}
-	ar.cbs = ar.cbs[:0]
-	ar.initApplyResult(p)
+	ad.cbs = ad.cbs[:0]
+	ad.initApplyResult(p)
 }
 
 func (p *peer) handleApply(committedEntries []eraftpb.Entry) {
 	if len(committedEntries) == 0 {
 		return
 	}
-	p.applyResult.initApplyResult(p)
+	p.applyData.initApplyResult(p)
+	var results []runResult
+
 	for i := range committedEntries {
 		entry := &committedEntries[i]
-		expectedIndex := p.applyResult.applyState.AppliedIndex + 1
+		expectedIndex := p.applyData.applyState.AppliedIndex + 1
 		if expectedIndex != entry.Index {
 			panic("Expect consective index")
 		}
+		var applyres applyResult
 		switch entry.EntryType {
 		case eraftpb.EntryType_EntryNormal:
-			_ = p.handleEntryNormal(p.applyResult, entry)
+			applyres = p.handleEntryNormal(p.applyData, entry)
 		case eraftpb.EntryType_EntryConfChange:
 		}
-		p.applyResult.applyToPeer(p)
+		switch applyres.resultType {
+		case applyResultTypeNone:
+		case applyResultTypeRunResult:
+			results = append(results, applyres.data)
+		}
+		p.applyData.applyToPeer(p)
 	}
+	p.applyData.finishFor(p, results)
+}
+
+func (ad *applyData) finishFor(p *peer, results []runResult) {
+	res := &ApplyRes{
+		regionID:   p.regionId,
+		runResults: results,
+	}
+	ad.applyTaskResList = append(ad.applyTaskResList, res)
 }
 
 func (p *peer) popNormal(term uint64) *proposal {
@@ -640,7 +705,7 @@ func (ac *applyCallback) push(cb *message.Callback, resp *raft_cmdpb.RaftCmdResp
 	ac.cbs = append(ac.cbs, cb)
 }
 
-func (p *peer) handleEntryNormal(ar *applyResult, entry *eraftpb.Entry) applyResult {
+func (p *peer) handleEntryNormal(ad *applyData, entry *eraftpb.Entry) applyResult {
 	index := entry.Index
 	term := entry.Term
 	if len(entry.Data) > 0 {
@@ -652,40 +717,40 @@ func (p *peer) handleEntryNormal(ar *applyResult, entry *eraftpb.Entry) applyRes
 		if index == 0 {
 			panic("Handle raft cmd needs a none zero index")
 		}
-		resp, txn, result := p.applyRaftCmd(ar, index, term, cmd)
+		resp, txn, result := p.applyRaftCmd(ad, index, term, cmd)
 
 		fmt.Printf("Applied command. region_id %d, peer_id %d, index %d\n", p.Region().Id, p.PeerId(), index)
 
 		BindRespTerm(resp, term)
 		cmdCB := p.findCallback(index, term)
-		fmt.Println("sizeof ar.cbs ", len(ar.cbs))
-		ar.cbs[len(ar.cbs)-1].push(cmdCB, resp, txn)
+		fmt.Println("sizeof ad.cbs ", len(ad.cbs))
+		ad.cbs[len(ad.cbs)-1].push(cmdCB, resp, txn)
 		return result
 	}
 
-	ar.applyState.AppliedIndex = index
+	ad.applyState.AppliedIndex = index
 	for {
 		cmd := p.popNormal(term - 1)
 		if cmd == nil {
 			break
 		}
-		ar.cbs[len(ar.cbs)-1].push(cmd.cb, ErrRespStaleCommand(term), nil)
+		ad.cbs[len(ad.cbs)-1].push(cmd.cb, ErrRespStaleCommand(term), nil)
 	}
 	return applyResult{}
 }
 
-// func (p *peer) RaftCmd(ar *applyResult, index, term uint64, cmd *raft_cmdpb.RaftCmdRequest) applyResult {
+// func (p *peer) RaftCmd(ad *applyData, index, term uint64, cmd *raft_cmdpb.RaftCmdRequest) applyResult {
 // 	if index == 0 {
 // 		panic("Process raft cmd needs a none zero index")
 // 	}
-// 	resp, txn, result := p.applyRaftCmd(ar, index, term, cmd)
+// 	resp, txn, result := p.applyRaftCmd(ad, index, term, cmd)
 
 // 	fmt.Printf("Applied command. region_id %d, peer_id %d, index %d\n", p.Region().Id, p.PeerId(), index)
 
 // 	BindRespTerm(resp, term)
 // 	cmdCB := p.findCallback(index, term)
-// 	fmt.Println("sizeof ar.cbs ", len(ar.cbs))
-// 	ar.cbs[len(ar.cbs)-1].push(cmdCB, resp, txn)
+// 	fmt.Println("sizeof ad.cbs ", len(ad.cbs))
+// 	ad.cbs[len(ad.cbs)-1].push(cmdCB, resp, txn)
 // 	return result
 // }
 
@@ -705,36 +770,36 @@ func (p *peer) findCallback(index, term uint64) *message.Callback {
 	return nil
 }
 
-func (p *peer) applyRaftCmd(ar *applyResult, index, term uint64,
+func (p *peer) applyRaftCmd(ad *applyData, index, term uint64,
 	req *raft_cmdpb.RaftCmdRequest) (*raft_cmdpb.RaftCmdResponse, *badger.Txn, applyResult) {
 
-	ar.wb.SetSafePoint()
-	resp, txn, applyResult, err := p.RunRaftCmd(ar, req)
+	ad.wb.SetSafePoint()
+	resp, txn, applyResult, err := p.RunRaftCmd(ad, req)
 	if err != nil {
-		ar.wb.RollbackToSafePoint()
+		ad.wb.RollbackToSafePoint()
 		if txn != nil {
 			txn.Discard()
 			txn = nil
 		}
 		resp = ErrResp(err)
 	}
-	ar.applyState.AppliedIndex = index
+	ad.applyState.AppliedIndex = index
 	return resp, txn, applyResult
 }
 
-func (p *peer) RunRaftCmd(ar *applyResult, req *raft_cmdpb.RaftCmdRequest) (
+func (p *peer) RunRaftCmd(ad *applyData, req *raft_cmdpb.RaftCmdRequest) (
 	resp *raft_cmdpb.RaftCmdResponse, txn *badger.Txn, result applyResult, err error) {
 	err = util.CheckRegionEpoch(req, p.Region(), false)
 	if err != nil {
 		return
 	}
 	if req.AdminRequest != nil {
-		return p.execAdminCmd(ar, req)
+		return p.RunAdminCmd(ad, req)
 	}
-	return p.RunKvCmd(ar, req)
+	return p.RunKvCmd(ad, req)
 }
 
-func (p *peer) execAdminCmd(ar *applyResult, req *raft_cmdpb.RaftCmdRequest) (
+func (p *peer) RunAdminCmd(ad *applyData, req *raft_cmdpb.RaftCmdRequest) (
 	resp *raft_cmdpb.RaftCmdResponse, txn *badger.Txn, result applyResult, err error) {
 	adminReq := req.AdminRequest
 	cmdType := adminReq.CmdType
@@ -744,7 +809,7 @@ func (p *peer) execAdminCmd(ar *applyResult, req *raft_cmdpb.RaftCmdRequest) (
 	case raft_cmdpb.AdminCmdType_ChangePeer:
 	case raft_cmdpb.AdminCmdType_Split:
 	case raft_cmdpb.AdminCmdType_CompactLog:
-		adminResp, result, err = p.execCompactLog(ar, adminReq)
+		adminResp, result, err = p.RunCompactLog(ad, adminReq)
 	case raft_cmdpb.AdminCmdType_TransferLeader:
 	case raft_cmdpb.AdminCmdType_InvalidAdmin:
 		err = errors.New("Invalid  AdminCmdType")
@@ -758,11 +823,11 @@ func (p *peer) execAdminCmd(ar *applyResult, req *raft_cmdpb.RaftCmdRequest) (
 	return
 }
 
-func (p *peer) execCompactLog(ar *applyResult, req *raft_cmdpb.AdminRequest) (
+func (p *peer) RunCompactLog(ad *applyData, req *raft_cmdpb.AdminRequest) (
 	resp *raft_cmdpb.AdminResponse, result applyResult, err error) {
 	compactIndex := req.CompactLog.CompactIndex
 	resp = new(raft_cmdpb.AdminResponse)
-	applyState := &ar.applyState
+	applyState := &ad.applyState
 	firstIndex := applyState.TruncatedState.Index + 1
 	if compactIndex <= firstIndex {
 		fmt.Printf("%s no entry need to be compacted", p.Tag)
@@ -781,11 +846,16 @@ func (p *peer) execCompactLog(ar *applyResult, req *raft_cmdpb.AdminRequest) (
 	fmt.Printf("%s compact log entries to %d", p.Tag, compactIndex)
 	applyState.TruncatedState.Index = compactIndex
 	applyState.TruncatedState.Term = compactTerm
-
+	result = applyResult{
+		resultType: applyResultTypeRunResult,
+		data: &resultCompactLog{
+			truncatedIndex: applyState.TruncatedState.Index,
+			firstIndex:     firstIndex,
+		}}
 	return
 }
 
-func (p *peer) RunKvCmd(ar *applyResult, req *raft_cmdpb.RaftCmdRequest) (
+func (p *peer) RunKvCmd(ad *applyData, req *raft_cmdpb.RaftCmdRequest) (
 	resp *raft_cmdpb.RaftCmdResponse, txn *badger.Txn, result applyResult, err error) {
 	requests := req.GetRequests()
 	resps := make([]*raft_cmdpb.Response, 0, len(requests))
@@ -794,17 +864,17 @@ func (p *peer) RunKvCmd(ar *applyResult, req *raft_cmdpb.RaftCmdRequest) (
 		switch req.CmdType {
 		case raft_cmdpb.CmdType_Put:
 			var r *raft_cmdpb.Response
-			r, err = p.RunPut(ar, req.GetPut())
+			r, err = p.RunPut(ad, req.GetPut())
 			resps = append(resps, r)
 			hasWrite = true
 		case raft_cmdpb.CmdType_Delete:
 			var r *raft_cmdpb.Response
-			r, err = p.RunDelete(ar, req.GetDelete())
+			r, err = p.RunDelete(ad, req.GetDelete())
 			resps = append(resps, r)
 			hasWrite = true
 		case raft_cmdpb.CmdType_Get:
 			var r *raft_cmdpb.Response
-			r, err = p.handleGet(ar, req.GetGet())
+			r, err = p.handleGet(ad, req.GetGet())
 			resps = append(resps, r)
 			hasRead = true
 		case raft_cmdpb.CmdType_Snap:
@@ -826,39 +896,39 @@ func (p *peer) RunKvCmd(ar *applyResult, req *raft_cmdpb.RaftCmdRequest) (
 	return
 }
 
-func (p *peer) RunPut(ar *applyResult, req *raft_cmdpb.PutRequest) (*raft_cmdpb.Response, error) {
+func (p *peer) RunPut(ad *applyData, req *raft_cmdpb.PutRequest) (*raft_cmdpb.Response, error) {
 	key, value := req.GetKey(), req.GetValue()
 	if err := util.CheckKeyInRegion(key, p.Region()); err != nil {
 		return nil, err
 	}
 
 	if cf := req.GetCf(); len(cf) != 0 {
-		ar.wb.SetCF(cf, key, value)
+		ad.wb.SetCF(cf, key, value)
 	} else {
-		ar.wb.SetCF(engine_util.CfDefault, key, value)
+		ad.wb.SetCF(engine_util.CfDefault, key, value)
 	}
 	return &raft_cmdpb.Response{
 		CmdType: raft_cmdpb.CmdType_Put,
 	}, nil
 }
 
-func (p *peer) RunDelete(ar *applyResult, req *raft_cmdpb.DeleteRequest) (*raft_cmdpb.Response, error) {
+func (p *peer) RunDelete(ad *applyData, req *raft_cmdpb.DeleteRequest) (*raft_cmdpb.Response, error) {
 	key := req.GetKey()
 	if err := util.CheckKeyInRegion(key, p.Region()); err != nil {
 		return nil, err
 	}
 
 	if cf := req.GetCf(); len(cf) != 0 {
-		ar.wb.DeleteCF(cf, key)
+		ad.wb.DeleteCF(cf, key)
 	} else {
-		ar.wb.DeleteCF(engine_util.CfDefault, key)
+		ad.wb.DeleteCF(engine_util.CfDefault, key)
 	}
 	return &raft_cmdpb.Response{
 		CmdType: raft_cmdpb.CmdType_Delete,
 	}, nil
 }
 
-func (p *peer) handleGet(ar *applyResult, req *raft_cmdpb.GetRequest) (*raft_cmdpb.Response, error) {
+func (p *peer) handleGet(ad *applyData, req *raft_cmdpb.GetRequest) (*raft_cmdpb.Response, error) {
 	key := req.GetKey()
 	if err := util.CheckKeyInRegion(key, p.Region()); err != nil {
 		return nil, err
