@@ -42,10 +42,9 @@ type RaftLog struct {
 	// Invariant: applied <= committed
 	applied uint64
 
-	// log entries with index <= stabled are stabled to storage
-	// Not very understanding the meaning of stable here
-	// What is the relationship between stabled and commited?
-	// I thought snapshot was only aimed at logs that were already commited.
+	// log entries with index <= stabled are persisted to storage.
+	// It is used to record the logs that are not persisted by storage yet.
+	// Everytime handling `Ready`, the unstabled logs will be included.
 	stabled uint64
 
 	// all entries that have not yet compact.
@@ -118,6 +117,31 @@ func newLog(storage Storage) *RaftLog {
 // grow unlimitedly in memory
 func (l *RaftLog) maybeCompact() {
 	// Your Code Here (2C).
+	var firstEntryIndex, firstEntryTerm uint64
+	var err error
+	for {
+		firstEntryIndex, err = l.storage.FirstIndex()
+		if err != nil {
+			panic(err)
+		}
+		firstEntryTerm, err = l.storage.Term(firstEntryIndex - 1)
+		if err == ErrCompacted {
+			if i, _ := l.storage.FirstIndex(); i != firstEntryIndex {
+				continue
+			}
+		}
+		if err != nil {
+			panic(err)
+		} else {
+			break
+		}
+	}
+	numCompact := firstEntryIndex - l.snapLastIndex - 1
+	if numCompact > 0 && numCompact < uint64(len(l.entries)) {
+		l.entries = l.entries[numCompact:]
+		l.snapLastIndex = firstEntryIndex - 1
+		l.snapLastTerm = firstEntryTerm
+	}
 }
 
 // unstableEntries return all the unstable entries
@@ -299,6 +323,15 @@ func (l *RaftLog) Commit(index, term uint64) bool {
 	return false
 }
 
+func (l *RaftLog) commitTo(tocommit uint64) {
+	if l.committed < tocommit {
+		if l.LastIndex() < tocommit {
+			panic(errors.New("Non-Consective CommitIndex"))
+		}
+		l.committed = tocommit
+	}
+}
+
 func (l *RaftLog) Applied(index uint64) {
 	if index == 0 {
 		return
@@ -319,4 +352,23 @@ func (l *RaftLog) StableSnap(index uint64) {
 	if l.pendingSnapshot != nil && l.pendingSnapshot.Metadata.Index == index {
 		l.pendingSnapshot = nil
 	}
+}
+
+func (l *RaftLog) restore(s pb.Snapshot) {
+	l.committed = s.Metadata.Index
+	l.entries = nil
+	l.stabled = s.Metadata.Index
+	l.snapLastIndex = s.Metadata.Index
+	l.snapLastTerm = s.Metadata.Term
+	l.pendingSnapshot = &s
+}
+
+func (l *RaftLog) Entries(i uint64) ([]pb.Entry, error) {
+	if i < l.FirstIndex() {
+		return nil, ErrCompacted
+	}
+	if i > l.LastIndex() {
+		return nil, nil
+	}
+	return l.entries[i-l.snapLastIndex-1:], nil
 }

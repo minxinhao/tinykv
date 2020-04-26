@@ -728,9 +728,61 @@ func (p *peer) RunRaftCmd(ar *applyResult, req *raft_cmdpb.RaftCmdRequest) (
 	if err != nil {
 		return
 	}
-	// if req.AdminRequest != nil {
-	// }
+	if req.AdminRequest != nil {
+		return p.execAdminCmd(ar, req)
+	}
 	return p.RunKvCmd(ar, req)
+}
+
+func (p *peer) execAdminCmd(ar *applyResult, req *raft_cmdpb.RaftCmdRequest) (
+	resp *raft_cmdpb.RaftCmdResponse, txn *badger.Txn, result applyResult, err error) {
+	adminReq := req.AdminRequest
+	cmdType := adminReq.CmdType
+
+	var adminResp *raft_cmdpb.AdminResponse
+	switch cmdType {
+	case raft_cmdpb.AdminCmdType_ChangePeer:
+	case raft_cmdpb.AdminCmdType_Split:
+	case raft_cmdpb.AdminCmdType_CompactLog:
+		adminResp, result, err = p.execCompactLog(ar, adminReq)
+	case raft_cmdpb.AdminCmdType_TransferLeader:
+	case raft_cmdpb.AdminCmdType_InvalidAdmin:
+		err = errors.New("Invalid  AdminCmdType")
+	}
+	if err != nil {
+		return
+	}
+	adminResp.CmdType = cmdType
+	resp = newCmdRespForReq(req)
+	resp.AdminResponse = adminResp
+	return
+}
+
+func (p *peer) execCompactLog(ar *applyResult, req *raft_cmdpb.AdminRequest) (
+	resp *raft_cmdpb.AdminResponse, result applyResult, err error) {
+	compactIndex := req.CompactLog.CompactIndex
+	resp = new(raft_cmdpb.AdminResponse)
+	applyState := &ar.applyState
+	firstIndex := applyState.TruncatedState.Index + 1
+	if compactIndex <= firstIndex {
+		fmt.Printf("%s no entry need to be compacted", p.Tag)
+		return
+	}
+	compactTerm := req.CompactLog.CompactTerm
+	if compactTerm == 0 {
+		fmt.Printf("%s compact term shouldn't be 0", p.Tag)
+		err = errors.New("Compact with term 0")
+		return
+	}
+
+	if compactIndex <= applyState.TruncatedState.Index || compactIndex > applyState.AppliedIndex {
+		return
+	}
+	fmt.Printf("%s compact log entries to %d", p.Tag, compactIndex)
+	applyState.TruncatedState.Index = compactIndex
+	applyState.TruncatedState.Term = compactTerm
+
+	return
 }
 
 func (p *peer) RunKvCmd(ar *applyResult, req *raft_cmdpb.RaftCmdRequest) (

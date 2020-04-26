@@ -21,6 +21,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/pingcap-incubator/tinykv/log"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/raft_cmdpb"
 )
@@ -227,29 +228,22 @@ func (r *Raft) sendAppend(to uint64) bool {
 		From: r.id,
 	}
 
-	term, err_term := r.RaftLog.Term(progress.Next - 1)
+	term, errt := r.RaftLog.Term(progress.Next - 1)
+	ents, erre := r.RaftLog.Entries(progress.Next)
 
-	var entries []pb.Entry
-	var err_entries error
-	if progress.Next < r.RaftLog.FirstIndex() {
-		// fmt.Println(r.id, "to ", to, " sendAppend case 1 ")
-		entries, err_entries = nil, ErrCompacted
-	} else if progress.Next > r.RaftLog.LastIndex() {
-		// fmt.Println(r.id, "to ", to, " sendAppend case 2 LastIndex ", r.RaftLog.LastIndex(), " Next ", progress.Next)
-		entries, err_entries = nil, nil
-	} else {
-		entries, err_entries = r.RaftLog.entries[progress.Next-r.RaftLog.snapLastIndex-1:], nil
-	}
-
-	// progress.Next - 1 < snapLastIndex || progress.Next - 1 > r.RaftLog.LastIndex()
-	if err_term != nil || err_entries != nil {
+	if errt != nil || erre != nil {
+		// send snapshot if progress.Next isn't in raftlog.entries
 		message.MsgType = pb.MessageType_MsgSnapshot
 		snapshot, err := r.RaftLog.snapshot()
 		if err != nil {
+			if err == ErrSnapshotTemporarilyUnavailable {
+				log.Debugf("%d failed to send snapshot to %d with error ErrSnapshotTemporarilyUnavailable", r.id, to)
+				return false
+			}
 			panic(err)
 		}
 		if IsEmptySnap(&snapshot) {
-			panic(errors.New("Empty SnapShot"))
+			panic("Can't send empty snapshot")
 		}
 		message.Snapshot = &snapshot
 	} else {
@@ -257,14 +251,13 @@ func (r *Raft) sendAppend(to uint64) bool {
 		message.Index = progress.Next - 1
 		message.LogTerm = term
 
-		message_entries := make([]*pb.Entry, 0, len(entries))
-		for i := range entries {
-			message_entries = append(message_entries, &entries[i])
+		entries := make([]*pb.Entry, 0, len(ents))
+		for i := range ents {
+			entries = append(entries, &ents[i])
 		}
-		message.Entries = message_entries
+		message.Entries = entries
 		message.Commit = r.RaftLog.committed
 	}
-	// fmt.Println("Leader ", r.id, "sendappend to ", to, "with msg ", message)
 	r.send(message)
 	return true
 }
@@ -741,6 +734,32 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 // handleSnapshot handle Snapshot RPC request
 func (r *Raft) handleSnapshot(m pb.Message) {
 	// Your Code Here (2C).
+	storeFlag := true
+	s := *m.Snapshot
+	if s.Metadata.Index <= r.RaftLog.committed {
+		storeFlag = false
+	}
+	if r.RaftLog.matchForTerm(s.Metadata.Index, s.Metadata.Term) {
+		r.RaftLog.commitTo(s.Metadata.Index)
+		storeFlag = false
+	}
+
+	r.RaftLog.restore(s)
+	r.Prs = make(map[uint64]*Progress)
+
+	for _, n := range s.Metadata.ConfState.Nodes {
+		match, next := uint64(0), r.RaftLog.LastIndex()+1
+		if n == r.id {
+			match = next - 1
+		}
+		r.Prs[n] = &Progress{Next: next, Match: match}
+	}
+
+	if storeFlag {
+		r.send(pb.Message{To: m.From, MsgType: pb.MessageType_MsgAppendResponse, Index: r.RaftLog.LastIndex()})
+	} else {
+		r.send(pb.Message{To: m.From, MsgType: pb.MessageType_MsgAppendResponse, Index: r.RaftLog.committed})
+	}
 }
 
 // addNode add a new node to raft group

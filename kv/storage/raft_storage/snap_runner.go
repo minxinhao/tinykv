@@ -18,6 +18,7 @@ import (
 	"google.golang.org/grpc/keepalive"
 )
 
+// 有点复杂
 type sendSnapTask struct {
 	addr     string
 	msg      *raft_serverpb.RaftMessage
