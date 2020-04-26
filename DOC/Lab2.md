@@ -192,8 +192,13 @@ You should run `make lab2b` to pass all the tests.
 9. 所以实际上对Get并不需要特殊处理？因为Raft的leader直接保证了大多数的一致性，并且我们只通过leader来和上层的cluster以及raft storage进行交互。
 10. GenericTest真的太长了，并且测试的逻辑在debug的时候也不方便。
 
+<<<<<<< HEAD
 ### Part C
 
+=======
+
+### Part C
+>>>>>>> pingcap-incubator-course
 As things stand now with your code, it's not practical for a long-running server to remember the complete Raft log forever. Instead, the server will check the number of Raft log, and discard log entries exceeding the threshold from time to time.
 In this part, you will implement the Snapshot handling based on the above two part implementation. Generally, Snapshot is just a raft message like AppendEntrie used to replicate data to follower, what make it different is its size, Snapshot contains the whole state machine data in some point of time, and to build and send such a big message at once will consume many resource and time, which may block the handling of other raft message, to amortize this problem, Snapshot message will use an independent connect, and split the data into chunks to transport. That’s the reason why there is a snapshot RPC API for TinyKV service. If you are interested in the detail of sending and receiving, check `snapRunner` and the reference https://pingcap.com/blog-cn/tikv-source-code-reading-10/
 

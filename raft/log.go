@@ -45,6 +45,9 @@ type RaftLog struct {
 	// log entries with index <= stabled are persisted to storage.
 	// It is used to record the logs that are not persisted by storage yet.
 	// Everytime handling `Ready`, the unstabled logs will be included.
+	// log entries with index <= stabled are persisted to storage.
+	// It is used to record the logs that are not persisted by storage yet.
+	// Everytime handling `Ready`, the unstabled logs will be included.
 	stabled uint64
 
 	// all entries that have not yet compact.

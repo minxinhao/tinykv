@@ -149,7 +149,8 @@ type Raft struct {
 	electionElapsed int
 
 	// leadTransferee is id of the leader transfer target when its value is not zero.
-	// Follow the procedure defined in raft thesis 3.10.
+	// Follow the procedure defined in section 3.10 of Raft phd thesis.
+	// (https://web.stanford.edu/~ouster/cgi-bin/papers/OngaroPhD.pdf)
 	// (Used in 3A leader transfer)
 	leadTransferee uint64
 
@@ -505,6 +506,7 @@ func (r *Raft) LeaderStep(m pb.Message) error {
 			}
 			r.sendHeartbeat(id)
 		}
+		return nil
 	case pb.MessageType_MsgPropose:
 		// fmt.Println("Leader step MessageType_MsgPropose ", m)
 		if len(m.Entries) == 0 {
@@ -520,9 +522,9 @@ func (r *Raft) LeaderStep(m pb.Message) error {
 		}
 
 		r.AppendEntry(entries...)
-		if len(r.Prs) != 5 {
-			// panic("sendAppend without full peers")
-		}
+		// if len(r.Prs) != 5 {
+		// panic("sendAppend without full peers")
+		// }
 		for id, _ := range r.Prs {
 			if id == r.id {
 				continue
@@ -591,7 +593,7 @@ func (r *Raft) CanditateStep(m pb.Message) error {
 	case pb.MessageType_MsgHup:
 		r.StepMsgHup()
 	case pb.MessageType_MsgPropose:
-		// return ErrProposalDropped
+		return ErrProposalDropped
 	case pb.MessageType_MsgAppend:
 		// When it enters here,m.Term==r.Term
 		// There is a valid leader occur
@@ -638,7 +640,7 @@ func (r *Raft) FollowerStep(m pb.Message) error {
 	case pb.MessageType_MsgHup:
 		r.StepMsgHup()
 	case pb.MessageType_MsgPropose:
-		// return ErrProposalDropped
+		return ErrProposalDropped
 	case pb.MessageType_MsgAppend:
 		if m.Term < r.Term {
 			//Invalid Leader
