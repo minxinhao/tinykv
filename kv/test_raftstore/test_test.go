@@ -222,34 +222,34 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 			}()
 			last := ""
 			for atomic.LoadInt32(&done_clients) == 0 {
-				key := strconv.Itoa(cli) + " " + fmt.Sprintf("%08d", j)
-				value := "x " + strconv.Itoa(cli) + " " + strconv.Itoa(j) + " y"
-				log.Infof("%d: client new put %v,%v\n", cli, key, value)
-				cluster.MustPut([]byte(key), []byte(value))
-				last = NextValue(last, value)
-				cluster.MustGet([]byte(key), []byte(value))
-				values := cluster.Scan([]byte("0"), []byte("zzzzzzz"))
-				v := string(bytes.Join(values, []byte("")))
-				fmt.Println("scan to get all values ", v)
-				checkClntAppends(t, cli, v, j)
-				j++
-				// if (rand.Int() % 1000) < 500 {
-				// 	key := strconv.Itoa(cli) + " " + fmt.Sprintf("%08d", j)
-				// 	value := "x " + strconv.Itoa(cli) + " " + strconv.Itoa(j) + " y"
-				// 	log.Infof("%d: client new put %v,%v\n", cli, key, value)
-				// 	cluster.MustPut([]byte(key), []byte(value))
-				// 	last = NextValue(last, value)
-				// 	j++
-				// } else {
-				// 	start := strconv.Itoa(cli) + " " + fmt.Sprintf("%08d", 0)
-				// 	end := strconv.Itoa(cli) + " " + fmt.Sprintf("%08d", j)
-				// 	// log.Infof("%d: client new scan %v-%v want: %v\n", cli, start, end, last)
-				// 	values := cluster.Scan([]byte(start), []byte(end))
-				// 	v := string(bytes.Join(values, []byte("")))
-				// 	if v != last {
-				// 		log.Fatalf("get wrong value, client %v\nwant:%v\ngot: %v\n", cli, last, v)
-				// 	}
-				// }
+				// key := strconv.Itoa(cli) + " " + fmt.Sprintf("%08d", j)
+				// value := "x " + strconv.Itoa(cli) + " " + strconv.Itoa(j) + " y"
+				// log.Infof("%d: client new put %v,%v\n", cli, key, value)
+				// cluster.MustPut([]byte(key), []byte(value))
+				// last = NextValue(last, value)
+				// cluster.MustGet([]byte(key), []byte(value))
+				// values := cluster.Scan([]byte("0"), []byte("zzzzzzz"))
+				// v := string(bytes.Join(values, []byte("")))
+				// // fmt.Println("scan to get all values ", v)
+				// checkClntAppends(t, cli, v, j)
+				// j++
+				if (rand.Int() % 1000) < 500 {
+					key := strconv.Itoa(cli) + " " + fmt.Sprintf("%08d", j)
+					value := "x " + strconv.Itoa(cli) + " " + strconv.Itoa(j) + " y"
+					log.Infof("%d: client new put %v,%v\n", cli, key, value)
+					cluster.MustPut([]byte(key), []byte(value))
+					last = NextValue(last, value)
+					j++
+				} else {
+					start := strconv.Itoa(cli) + " " + fmt.Sprintf("%08d", 0)
+					end := strconv.Itoa(cli) + " " + fmt.Sprintf("%08d", j)
+					// log.Infof("%d: client new scan %v-%v want: %v\n", cli, start, end, last)
+					values := cluster.Scan([]byte(start), []byte(end))
+					v := string(bytes.Join(values, []byte("")))
+					if v != last {
+						log.Fatalf("get wrong value, client %v\nwant:%v\ngot: %v\n", cli, last, v)
+					}
+				}
 			}
 		})
 		// fmt.Println("fine")

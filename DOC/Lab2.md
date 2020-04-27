@@ -192,13 +192,9 @@ You should run `make lab2b` to pass all the tests.
 9. 所以实际上对Get并不需要特殊处理？因为Raft的leader直接保证了大多数的一致性，并且我们只通过leader来和上层的cluster以及raft storage进行交互。
 10. GenericTest真的太长了，并且测试的逻辑在debug的时候也不方便。
 
-<<<<<<< HEAD
-### Part C
-
-=======
 
 ### Part C
->>>>>>> pingcap-incubator-course
+
 As things stand now with your code, it's not practical for a long-running server to remember the complete Raft log forever. Instead, the server will check the number of Raft log, and discard log entries exceeding the threshold from time to time.
 In this part, you will implement the Snapshot handling based on the above two part implementation. Generally, Snapshot is just a raft message like AppendEntrie used to replicate data to follower, what make it different is its size, Snapshot contains the whole state machine data in some point of time, and to build and send such a big message at once will consume many resource and time, which may block the handling of other raft message, to amortize this problem, Snapshot message will use an independent connect, and split the data into chunks to transport. That’s the reason why there is a snapshot RPC API for TinyKV service. If you are interested in the detail of sending and receiving, check `snapRunner` and the reference https://pingcap.com/blog-cn/tikv-source-code-reading-10/
 
@@ -221,8 +217,24 @@ Do not handle next Raft ready before finishing apply snapshot.
 #### Notes
 
 1. After that, schedule a task to raftlog-gc worker located in `kv/raftstore/runner/raftlog_gc.go`. Raftlog-gc worker will do the actual log deletion work asynchronously. 
-> 还是不明白怎么发送task,没看见raftLogGCTaskHandler的taskResCh怎么传递到peer。同时raftLogGCTaskHandler在batch_system中被创建，传递链一直到raft_server里面？感觉是不是可以提示一下怎么传递。
-> 好像只有像ScheduleCompactLog那样通过ctx.router来发送gcTask？不说清楚的话我觉得不一定知道是要调用这个函数
 2. 不存在ReadyToHandlePendingSnap
 3. Then the snapshot will reflect in the next Raft ready, so the task you should do is to modify the raft ready process to handle the case of snapshot. When you are sure to apply the snapshot, you can update the peer storage’s memory state like `RaftLocalState`, `RaftApplyState` and `RegionLocalState`. Also don’t forget to persist these states to kvdb and raftdb and remove stale state from kvdb and raftdb.
 > 这一部分是2B完成了吗？
+4. 这里需要设置Term吗？我不设置就不会处理这条消息
+```go
+func TestProvideSnap2C(t *testing.T) {
+  ...
+	sm.Step(pb.Message{From: 2, To: 1, Term: 1, MsgType: pb.MessageType_MsgAppendResponse, Index: sm.Prs[2].Next - 1, Reject: true})
+```
+5. 文件句柄限制
+   1. sudo launchctl limit maxfiles 82920 unlimited
+   2. ulimit -n 82920
+6. GcLog是定时调用的
+```go
+func newTicker(regionID uint64, cfg *config.Config) *ticker {
+	...
+	t.schedules[int(PeerTickRaftLogGC)].interval = int64(cfg.RaftLogGCTickInterval / baseInterval)
+	...
+}
+```
+7. 只设置了`p.peerStorage.Engines.Kv的applystate1`，忘记了设置`p.peerStorage.applyState = ad.applyState`

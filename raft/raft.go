@@ -228,7 +228,7 @@ func (r *Raft) sendAppend(to uint64) bool {
 		To:   to,
 		From: r.id,
 	}
-
+	// fmt.Println("sendAppend to ", to)
 	term, errt := r.RaftLog.Term(progress.Next - 1)
 	ents, erre := r.RaftLog.Entries(progress.Next)
 
@@ -346,7 +346,7 @@ func (r *Raft) becomeCandidate() {
 // becomeLeader transform this peer's state to leader
 func (r *Raft) becomeLeader() {
 	// Your Code Here (2A).
-	fmt.Println("Become Leader ", r.id)
+	fmt.Println("Become Leader with term ", r.id, r.Term)
 	r.fresh()
 	r.Lead = r.id
 	r.State = StateLeader
@@ -385,7 +385,6 @@ func (r *Raft) AppendEntry(es ...pb.Entry) {
 // on `eraftpb.proto` for what msgs should be handled
 func (r *Raft) Step(m pb.Message) error {
 	// Your Code Here (2A).
-
 	// Rules for all servers
 	if m.Term < r.Term && m.MsgType != pb.MessageType_MsgHup && m.MsgType != pb.MessageType_MsgPropose && m.MsgType != pb.MessageType_MsgBeat {
 		if m.MsgType == pb.MessageType_MsgAppend {
@@ -397,6 +396,7 @@ func (r *Raft) Step(m pb.Message) error {
 		r.Lead = m.From
 	}
 	// if m.Term > r.Term && r.Lead == None {
+
 	if m.Term > r.Term {
 		if m.MsgType == pb.MessageType_MsgAppend || m.MsgType == pb.MessageType_MsgHeartbeat || m.MsgType == pb.MessageType_MsgSnapshot {
 			r.becomeFollower(m.Term, m.From)
@@ -404,6 +404,7 @@ func (r *Raft) Step(m pb.Message) error {
 			r.becomeFollower(m.Term, None)
 		}
 	}
+
 	switch r.State {
 	case StateFollower:
 		if err := r.FollowerStep(m); err != nil {
@@ -539,9 +540,12 @@ func (r *Raft) LeaderStep(m pb.Message) error {
 			if m.Index <= progress.Match {
 				rejectFlag = false
 			}
+			fmt.Println("reject MessageType_MsgAppendResponse with m.Index ", m.Index)
 			// m.RejectHint maybe 0 if follower has  empty entry and  snapshot
-			if progress.Next = m.Index; progress.Next < 1 {
-				progress.Next = 1
+			if rejectFlag {
+				if progress.Next = m.Index; progress.Next < 1 {
+					progress.Next = 1
+				}
 			}
 			if rejectFlag {
 				r.sendAppend(m.From)
@@ -745,21 +749,28 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 		r.RaftLog.commitTo(s.Metadata.Index)
 		storeFlag = false
 	}
+	if storeFlag {
+		r.RaftLog.restore(s)
+		r.Prs = make(map[uint64]*Progress)
 
-	r.RaftLog.restore(s)
-	r.Prs = make(map[uint64]*Progress)
-
-	for _, n := range s.Metadata.ConfState.Nodes {
-		match, next := uint64(0), r.RaftLog.LastIndex()+1
-		if n == r.id {
-			match = next - 1
+		for _, n := range s.Metadata.ConfState.Nodes {
+			match, next := uint64(0), r.RaftLog.LastIndex()+1
+			if n == r.id {
+				match = next - 1
+			}
+			r.Prs[n] = &Progress{Next: next, Match: match}
 		}
-		r.Prs[n] = &Progress{Next: next, Match: match}
 	}
 
+	sindex, sterm := m.Snapshot.Metadata.Index, m.Snapshot.Metadata.Term
+
 	if storeFlag {
+		log.Infof("%d [commit: %d] restored snapshot [index: %d, term: %d]",
+			r.id, r.RaftLog.committed, sindex, sterm)
 		r.send(pb.Message{To: m.From, MsgType: pb.MessageType_MsgAppendResponse, Index: r.RaftLog.LastIndex()})
 	} else {
+		log.Infof("%d [commit: %d] ignored snapshot [index: %d, term: %d]",
+			r.id, r.RaftLog.committed, sindex, sterm)
 		r.send(pb.Message{To: m.From, MsgType: pb.MessageType_MsgAppendResponse, Index: r.RaftLog.committed})
 	}
 }

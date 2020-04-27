@@ -473,6 +473,7 @@ func (d *peerMsgHandler) onRaftGCLogTick() {
 
 	appliedIdx := d.peerStorage.AppliedIndex()
 	firstIdx, _ := d.peerStorage.FirstIndex()
+	fmt.Printf("%s onRaftGCLogTick with appliedIdx %d and firstIdx %d\n", d.peer.Tag, appliedIdx, firstIdx)
 	var compactIdx uint64
 	if appliedIdx > firstIdx && appliedIdx-firstIdx >= d.ctx.cfg.RaftLogGcCountLimit {
 		compactIdx = appliedIdx
@@ -495,7 +496,9 @@ func (d *peerMsgHandler) onRaftGCLogTick() {
 
 	// Create a compact log request and notify directly.
 	regionID := d.regionId
+
 	request := newCompactLogRequest(regionID, d.Meta, compactIdx, term)
+	fmt.Printf("%s newCompactLogRequest with compactIdx %d and term %d\n", d.peer.Tag, compactIdx, term)
 	d.proposeRaftCommand(request, nil)
 }
 

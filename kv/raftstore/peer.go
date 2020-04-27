@@ -529,7 +529,7 @@ func (p *peer) HandleRaftReady(pdScheduler chan<- worker.Task, trans Transport) 
 	}
 
 	if p.RaftGroup.Raft.GetSnap() != nil && !p.ReadyToHandlePendingSnap() {
-		fmt.Printf("%v with apply_id: %v and last_applying_idx: %v can't handle snapshot", p.Tag, p.peerStorage.AppliedIndex(), p.LastApplyingIdx)
+		fmt.Printf("%v with apply_id: %v and last_applying_idx: %v can't handle snapshot\n", p.Tag, p.peerStorage.AppliedIndex(), p.LastApplyingIdx)
 		return nil
 	}
 
@@ -537,7 +537,7 @@ func (p *peer) HandleRaftReady(pdScheduler chan<- worker.Task, trans Transport) 
 		return nil
 	}
 
-	fmt.Printf("%v handle raftready", p.Tag)
+	fmt.Printf("%v handle raftready\n", p.Tag)
 
 	ready := p.RaftGroup.Ready()
 	if ready.Snapshot.GetMetadata() == nil {
@@ -629,12 +629,18 @@ func (ad *applyData) initApplyResult(p *peer) {
 
 func (ad *applyData) applyToPeer(p *peer) {
 	if ad.lastAppliedIndex < ad.applyState.AppliedIndex {
-		ad.wb.SetMeta(meta.ApplyStateKey(p.Region().GetId()), &ad.applyState)
+		fmt.Printf("%s write applystate %v \n", p.Tag, ad.applyState)
+		ad.wb.SetMeta(meta.ApplyStateKey(p.regionId), &ad.applyState)
 
 	}
 	if err := ad.wb.WriteToDB(p.peerStorage.Engines.Kv); err != nil {
 		panic(err)
 	}
+	p.peerStorage.applyState = ad.applyState
+	// appliedIdx := p.peerStorage.AppliedIndex()
+	// firstIdx, _ := p.peerStorage.FirstIndex()
+	// fmt.Printf("%s after writing applystate with appliedIdx %d and firstIdx %d\n", p.Tag, appliedIdx, firstIdx)
+
 	ad.wb.Reset()
 
 	for _, cb := range ad.cbs {
@@ -723,7 +729,7 @@ func (p *peer) handleEntryNormal(ad *applyData, entry *eraftpb.Entry) applyResul
 
 		BindRespTerm(resp, term)
 		cmdCB := p.findCallback(index, term)
-		fmt.Println("sizeof ad.cbs ", len(ad.cbs))
+		// fmt.Println("sizeof ad.cbs ", len(ad.cbs))
 		ad.cbs[len(ad.cbs)-1].push(cmdCB, resp, txn)
 		return result
 	}
@@ -783,6 +789,7 @@ func (p *peer) applyRaftCmd(ad *applyData, index, term uint64,
 		}
 		resp = ErrResp(err)
 	}
+
 	ad.applyState.AppliedIndex = index
 	return resp, txn, applyResult
 }
@@ -830,12 +837,13 @@ func (p *peer) RunCompactLog(ad *applyData, req *raft_cmdpb.AdminRequest) (
 	applyState := &ad.applyState
 	firstIndex := applyState.TruncatedState.Index + 1
 	if compactIndex <= firstIndex {
-		fmt.Printf("%s no entry need to be compacted", p.Tag)
+		fmt.Printf("%s no entry need to be compacted: compactIndex %d ,firstIndex %d  \n",
+			p.Tag, compactIndex, firstIndex)
 		return
 	}
 	compactTerm := req.CompactLog.CompactTerm
 	if compactTerm == 0 {
-		fmt.Printf("%s compact term shouldn't be 0", p.Tag)
+		fmt.Printf("%s compact term shouldn't be 0\n", p.Tag)
 		err = errors.New("Compact with term 0")
 		return
 	}
@@ -843,7 +851,7 @@ func (p *peer) RunCompactLog(ad *applyData, req *raft_cmdpb.AdminRequest) (
 	if compactIndex <= applyState.TruncatedState.Index || compactIndex > applyState.AppliedIndex {
 		return
 	}
-	fmt.Printf("%s compact log entries to %d", p.Tag, compactIndex)
+	fmt.Printf("%s compact log entries to %d\n", p.Tag, compactIndex)
 	applyState.TruncatedState.Index = compactIndex
 	applyState.TruncatedState.Term = compactTerm
 	result = applyResult{
@@ -885,7 +893,7 @@ func (p *peer) RunKvCmd(ad *applyData, req *raft_cmdpb.RaftCmdRequest) (
 			txn = p.peerStorage.Engines.Kv.NewTransaction(false)
 			hasRead = true
 		default:
-			fmt.Printf("invalid cmd type=%v", req.CmdType)
+			fmt.Printf("invalid cmd type=%v\n", req.CmdType)
 		}
 	}
 	if hasWrite && hasRead {
