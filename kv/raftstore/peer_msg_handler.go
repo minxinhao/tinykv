@@ -10,6 +10,7 @@ import (
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/snap"
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/util"
 	"github.com/pingcap-incubator/tinykv/log"
+	"github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/metapb"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/raft_cmdpb"
 	rspb "github.com/pingcap-incubator/tinykv/proto/pkg/raft_serverpb"
@@ -49,6 +50,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		return
 	}
 	// Your Code Here (2B).
+	d.peer.handleProposal()
 	applySnapResult := d.peer.HandleRaftReady(d.ctx.schedulerTaskSender, d.ctx.trans)
 	if applySnapResult != nil {
 		prevRegion := applySnapResult.PrevRegion
@@ -93,12 +95,58 @@ func (d *peerMsgHandler) onApplyResult(res *ApplyRes) {
 		switch x := result.(type) {
 		case *resultCompactLog:
 			d.ScheduleCompactLog(x.firstIndex, x.truncatedIndex)
+		case *runResultChangePeer:
+			d.ApplyChangePeer(x)
 		default:
 		}
 	}
 	res.runResults = nil
 	if d.stopped {
 		return
+	}
+}
+
+func (d *peerMsgHandler) ApplyChangePeer(changePeer *runResultChangePeer) {
+	changeType := changePeer.confChange.ChangeType
+	d.RaftGroup.ApplyConfChange(*changePeer.confChange)
+	if changePeer.confChange.NodeId == 0 { // Apply failed
+		return
+	}
+	d.ctx.storeMeta.setRegion(changePeer.region, d.peer)
+	peerID := changePeer.peer.Id
+	switch changeType {
+	case eraftpb.ConfChangeType_AddNode:
+		now := time.Now()
+		if d.IsLeader() {
+			d.PeersStartPendingTime[peerID] = now
+		}
+		d.insertPeerCache(changePeer.peer)
+	case eraftpb.ConfChangeType_RemoveNode:
+		if d.IsLeader() {
+			delete(d.PeersStartPendingTime, peerID)
+		}
+		d.removePeerCache(peerID)
+	}
+
+	// In pattern matching above, if the peer is the leader,
+	// it will push the change peer into `peers_start_pending_time`
+	// without checking if it is duplicated. We move `heartbeat_pd` here
+	// to utilize `collect_pending_peers` in `heartbeat_pd` to avoid
+	// adding the redundant peer.
+	if d.IsLeader() {
+		// Notify scheduler immediately.
+		fmt.Printf("%s notify scheduler with change peer region %s", d.Tag, d.Region())
+		d.HeartbeatScheduler(d.ctx.schedulerTaskSender)
+	}
+	myPeerID := d.PeerId()
+
+	// We only care remove itself now.
+	if changeType == eraftpb.ConfChangeType_RemoveNode && cp.peer.StoreId == d.storeID() {
+		if myPeerID == peerID {
+			d.destroyPeer()
+		} else {
+			panic(fmt.Sprintf("%s trying to remove unknown peer %s", d.Tag, cp.peer))
+		}
 	}
 }
 

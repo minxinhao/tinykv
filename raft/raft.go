@@ -386,7 +386,7 @@ func (r *Raft) AppendEntry(es ...pb.Entry) {
 func (r *Raft) Step(m pb.Message) error {
 	// Your Code Here (2A).
 	// Rules for all servers
-	if m.Term < r.Term && m.MsgType != pb.MessageType_MsgHup && m.MsgType != pb.MessageType_MsgPropose && m.MsgType != pb.MessageType_MsgBeat {
+	if m.Term < r.Term && m.MsgType != pb.MessageType_MsgHup && m.MsgType != pb.MessageType_MsgPropose && m.MsgType != pb.MessageType_MsgBeat && m.MsgType != pb.MessageType_MsgTransferLeader {
 		if m.MsgType == pb.MessageType_MsgAppend {
 			// fmt.Println(r.id, " reject append msg for term msg  ", m)
 		}
@@ -588,6 +588,24 @@ func (r *Raft) LeaderStep(m pb.Message) error {
 			r.sendAppend(m.From)
 		}
 	case pb.MessageType_MsgTransferLeader:
+		leadTransferee := m.From
+		lastLeadTransferee := r.leadTransferee
+		if lastLeadTransferee != None {
+			if lastLeadTransferee == leadTransferee {
+				return nil
+			}
+			r.leadTransferee = None
+		}
+		if leadTransferee == r.id {
+			return nil
+		}
+		r.electionElapsed = 0
+		r.leadTransferee = leadTransferee
+		if progress.Match == r.RaftLog.LastIndex() {
+			r.send(pb.Message{To: leadTransferee, MsgType: pb.MessageType_MsgTimeoutNow})
+		} else {
+			r.sendAppend(leadTransferee)
+		}
 	}
 	return nil
 }
@@ -672,15 +690,37 @@ func (r *Raft) FollowerStep(m pb.Message) error {
 		} else {
 			r.send(pb.Message{To: m.From, Term: r.Term, MsgType: pb.MessageType_MsgRequestVoteResponse, Reject: true})
 		}
-	// case pb.MessageType_MsgTransferLeader:
-	// 	if r.Lead == None {
-	// 		return nil
-	// 	}
-	// 	m.To = r.Lead
-	// 	r.send(m)
+	case pb.MessageType_MsgTransferLeader:
+		if r.Lead == None {
+			return nil
+		}
+		m.To = r.Lead
+		r.send(m)
 	case pb.MessageType_MsgTimeoutNow:
 		if _, ok := r.Prs[r.id]; ok {
-			r.StepMsgHup()
+			r.becomeCandidate()
+			voteMsg := pb.MessageType_MsgRequestVote
+			term := r.Term
+			var granted int
+			if _, ok := r.votes[r.id]; !ok {
+				r.votes[r.id] = true
+			}
+			for _, vv := range r.votes {
+				if vv {
+					granted++
+				}
+			}
+
+			if r.VoteThreshold() == granted {
+				r.becomeLeader()
+			} else {
+				for id := range r.Prs {
+					if id == r.id {
+						continue
+					}
+					r.send(pb.Message{Term: term, To: id, MsgType: voteMsg, Index: r.RaftLog.LastIndex(), LogTerm: r.RaftLog.LastTerm()})
+				}
+			}
 		}
 	}
 	return nil
@@ -778,11 +818,42 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 // addNode add a new node to raft group
 func (r *Raft) addNode(id uint64) {
 	// Your Code Here (3A).
+	if r.Prs[id] == nil {
+		r.Prs[id] = &Progress{Next: r.RaftLog.LastIndex() + 1, Match: 0}
+
+	} else {
+		return
+	}
 }
 
 // removeNode remove a node from raft group
 func (r *Raft) removeNode(id uint64) {
 	// Your Code Here (3A).
+	delete(r.Prs, id)
+	if len(r.Prs) == 0 {
+		return
+	}
+	matchIndex := make(uint64Slice, len(r.Prs))
+	idx := 0
+	for _, p := range r.Prs {
+		matchIndex[idx] = p.Match
+		idx++
+	}
+	sort.Sort(matchIndex)
+	max_consist_index := matchIndex[len(matchIndex)-r.VoteThreshold()]
+	flag := r.RaftLog.Commit(max_consist_index, r.Term)
+
+	if flag {
+		for id, _ := range r.Prs {
+			if id == r.id {
+				return
+			}
+			r.sendAppend(id)
+		}
+	}
+	if r.State == StateLeader && r.leadTransferee == id {
+		r.leadTransferee = None
+	}
 }
 
 func (r *Raft) SoftState() *SoftState {

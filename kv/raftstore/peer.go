@@ -62,9 +62,10 @@ func replicatePeer(storeID uint64, cfg *config.Config, sched chan<- worker.Task,
 
 type proposal struct {
 	// index + term for unique identification
-	index uint64
-	term  uint64
-	cb    *message.Callback
+	index        uint64
+	term         uint64
+	isConfChange bool
+	cb           *message.Callback
 }
 
 type peer struct {
@@ -90,6 +91,11 @@ type peer struct {
 	// (Used in 2B)
 	proposals []*proposal
 	applyData *applyData
+
+	// (Used in 3A)
+	confChange    *proposal
+	normalCmd     []*proposal
+	pendingRemove bool
 
 	// Index of last scheduled compacted raft log.
 	// (Used in 2C)
@@ -474,12 +480,15 @@ func (p *peer) Propose(cfg *config.Config, cb *message.Callback, req *raft_cmdpb
 		return false
 	}
 	var idx uint64
+	isConfChange := false
 	switch policy {
 	case RequestType_ProposeKvOp:
 		idx, err = p.ProposeKvOp(cfg, req)
 	case RequestType_ProposeTransferLeader:
-
+		return p.ProposeTransferLeader(cfg, req, cb)
 	case RequestType_ProposeConfChange:
+		isConfChange = true
+		idx, err = p.ProposeConfChange(cfg, req)
 	}
 
 	if err != nil {
@@ -489,13 +498,107 @@ func (p *peer) Propose(cfg *config.Config, cb *message.Callback, req *raft_cmdpb
 	}
 
 	proposal := &proposal{
-		index: idx,
-		term:  p.Term(),
-		cb:    cb,
+		index:        idx,
+		term:         p.Term(),
+		isConfChange: isConfChange,
+		cb:           cb,
 	}
 	p.proposals = append(p.proposals, proposal)
 
 	return true
+}
+
+func (p *peer) ProposeConfChange(cfg *config.Config, req *raft_cmdpb.RaftCmdRequest) (uint64, error) {
+	if p.RaftGroup.Raft.PendingConfIndex > p.peerStorage.AppliedIndex() {
+		return 0, fmt.Errorf("%v exists a pending conf change already", p.Tag)
+	}
+
+	if err := p.checkConfChange(cfg, req); err != nil {
+		return 0, err
+	}
+
+	data, err := req.Marshal()
+	if err != nil {
+		return 0, err
+	}
+
+	changePeer := GetChangePeerCmd(req)
+	var cc eraftpb.ConfChange
+	cc.ChangeType = changePeer.ChangeType
+	cc.NodeId = changePeer.Peer.Id
+	cc.Context = data
+
+	fmt.Printf("%v propose conf change %v peer %v", p.Tag, cc.ChangeType, cc.NodeId)
+
+	proposeIndex := p.nextProposalIndex()
+	if err = p.RaftGroup.ProposeConfChange(cc); err != nil {
+		return 0, err
+	}
+	if p.nextProposalIndex() == proposeIndex {
+		return 0, &util.ErrNotLeader{RegionId: p.regionId}
+	}
+
+	return proposeIndex, nil
+}
+
+func (p *peer) checkConfChange(cfg *config.Config, cmd *raft_cmdpb.RaftCmdRequest) error {
+	changePeerCmd := GetChangePeerCmd(cmd)
+	changeType := changePeerCmd.GetChangeType()
+	changepeer := changePeerCmd.GetPeer()
+
+	progress := p.RaftGroup.GetProgress()
+	total := len(progress)
+	if total <= 1 {
+		return nil
+	}
+
+	switch changeType {
+	case eraftpb.ConfChangeType_AddNode:
+		progress[changepeer.Id] = raft.Progress{}
+	case eraftpb.ConfChangeType_RemoveNode:
+		if _, ok := progress[changepeer.Id]; ok {
+			delete(progress, changepeer.Id)
+		} else {
+			return nil
+		}
+	}
+
+	numConsistPeer := 0
+	for _, pr := range progress {
+		if pr.Match >= p.peerStorage.truncatedIndex() {
+			numConsistPeer += 1
+		}
+	}
+	total_progress := len(progress)
+	thresholdNum := total_progress/2 + 1
+
+	if numConsistPeer >= thresholdNum {
+		return nil
+	}
+
+	return fmt.Errorf("Cann't apply changepeer %v now with, total %v, numConsistPeer %v, thresholdNum after chagne %v",
+		changePeerCmd, total, numConsistPeer, thresholdNum)
+}
+
+func (p *peer) ProposeTransferLeader(cfg *config.Config, req *raft_cmdpb.RaftCmdRequest, cb *message.Callback) bool {
+	var transferLeader *raft_cmdpb.TransferLeaderRequest
+	if req.AdminRequest != nil {
+		transferLeader = req.AdminRequest.TransferLeader
+	}
+	peer := transferLeader.Peer
+	p.RaftGroup.TransferLeader(peer.GetId())
+	cb.Done(transferLeaderResponse())
+
+	return true
+}
+
+func transferLeaderResponse() *raft_cmdpb.RaftCmdResponse {
+	adminResp := &raft_cmdpb.AdminResponse{}
+	adminResp.CmdType = raft_cmdpb.AdminCmdType_TransferLeader
+	adminResp.TransferLeader = &raft_cmdpb.TransferLeaderResponse{}
+	resp := &raft_cmdpb.RaftCmdResponse{Header: &raft_cmdpb.RaftResponseHeader{}}
+	resp.AdminResponse = adminResp
+	return resp
 }
 
 func (p *peer) ProposeKvOp(cfg *config.Config, req *raft_cmdpb.RaftCmdRequest) (uint64, error) {
@@ -521,6 +624,28 @@ func notifyStaleCommand(regionID, peerID, term uint64, pro proposal) {
 
 func (p *peer) ReadyToHandlePendingSnap() bool {
 	return p.LastApplyingIdx == p.peerStorage.AppliedIndex()
+}
+
+func (p *peer) handleProposal() {
+	regionID, peerID := p.regionId, p.PeerId()
+	if p.pendingRemove {
+		for _, proposal := range p.proposals {
+			notifyStaleCommand(regionID, peerID, p.Term(), *proposal)
+		}
+		return
+	}
+	for _, proposal := range p.proposals {
+		if proposal.isConfChange {
+			confCmd := p.confChange
+			p.confChange = nil
+			if confCmd != nil {
+				notifyStaleCommand(regionID, peerID, p.Term(), *confCmd)
+			}
+			p.confChange = proposal
+		} else {
+			p.normalCmd = append(p.normalCmd, proposal)
+		}
+	}
 }
 
 func (p *peer) HandleRaftReady(pdScheduler chan<- worker.Task, trans Transport) *ApplySnapResult {
@@ -574,10 +699,13 @@ func (p *peer) HandleRaftReady(pdScheduler chan<- worker.Task, trans Transport) 
 
 func (p *peer) handleApllySnap() {
 	log.Infof("%s accept snapshot with %d", p.Tag, p.Term())
-	for _, pro := range p.proposals {
+	for _, pro := range p.normalCmd {
 		notifyStaleCommand(p.regionId, p.PeerId(), p.Term(), *pro)
 	}
-	p.proposals = p.proposals[:0]
+	p.normalCmd = p.normalCmd[:0]
+	if confchange := p.confChange; confchange != nil {
+		notifyStaleCommand(p.regionId, p.PeerId(), p.Term(), *confchange)
+	}
 }
 
 type applyCallback struct {
@@ -615,6 +743,12 @@ type runResult = interface{}
 type resultCompactLog struct {
 	truncatedIndex uint64
 	firstIndex     uint64
+}
+
+type runResultChangePeer struct {
+	confChange *eraftpb.ConfChange
+	peer       *metapb.Peer
+	region     *metapb.Region
 }
 
 func (ad *applyData) initApplyResult(p *peer) {
@@ -672,6 +806,7 @@ func (p *peer) handleApply(committedEntries []eraftpb.Entry) {
 		case eraftpb.EntryType_EntryNormal:
 			applyres = p.handleEntryNormal(p.applyData, entry)
 		case eraftpb.EntryType_EntryConfChange:
+			applyres = p.handleRaftEntryConfChange(p.applyData, entry)
 		}
 		switch applyres.resultType {
 		case applyResultTypeNone:
@@ -681,6 +816,47 @@ func (p *peer) handleApply(committedEntries []eraftpb.Entry) {
 		p.applyData.applyToPeer(p)
 	}
 	p.applyData.finishFor(p, results)
+}
+
+func (p *peer) handleRaftEntryConfChange(ad *applyData, entry *eraftpb.Entry) applyResult {
+	index := entry.Index
+	term := entry.Term
+	confChange := new(eraftpb.ConfChange)
+	if err := confChange.Unmarshal(entry.Data); err != nil {
+		panic(err)
+	}
+	cmd := new(raft_cmdpb.RaftCmdRequest)
+	if err := cmd.Unmarshal(confChange.Context); err != nil {
+		panic(err)
+	}
+	err := cmd.Unmarshal(entry.Data)
+	if err != nil {
+		panic(err)
+	}
+	if index == 0 {
+		panic("Unexpected 0 index in handleRaftEntryConfChange")
+	}
+	resp, txn, result := p.applyRaftCmd(ad, index, term, cmd)
+
+	fmt.Printf("handleRaftEntryConfChange: region_id %d, peer_id %d, index %d\n", p.Region().Id, p.PeerId(), index)
+
+	BindRespTerm(resp, term)
+	cmdCB := p.findCallback(index, term)
+	// fmt.Println("sizeof ad.cbs ", len(ad.cbs))
+	ad.cbs[len(ad.cbs)-1].push(cmdCB, resp, txn)
+
+	switch result.resultType {
+	case applyResultTypeNone:
+		return applyResult{
+			resultType: applyResultTypeRunResult,
+			data:       &runResultChangePeer{confChange: new(eraftpb.ConfChange)}}
+	case applyResultTypeRunResult:
+		cp := result.data.(*runResultChangePeer)
+		cp.confChange = confChange
+		return applyResult{resultType: applyResultTypeRunResult, data: result.data}
+	default:
+		panic("Invalid resultType")
+	}
 }
 
 func (ad *applyData) finishFor(p *peer, results []runResult) {
@@ -814,6 +990,7 @@ func (p *peer) RunAdminCmd(ad *applyData, req *raft_cmdpb.RaftCmdRequest) (
 	var adminResp *raft_cmdpb.AdminResponse
 	switch cmdType {
 	case raft_cmdpb.AdminCmdType_ChangePeer:
+		adminResp, result, err = p.RunChangePeer(ad, adminReq)
 	case raft_cmdpb.AdminCmdType_Split:
 	case raft_cmdpb.AdminCmdType_CompactLog:
 		adminResp, result, err = p.RunCompactLog(ad, adminReq)
@@ -827,6 +1004,64 @@ func (p *peer) RunAdminCmd(ad *applyData, req *raft_cmdpb.RaftCmdRequest) (
 	adminResp.CmdType = cmdType
 	resp = newCmdRespForReq(req)
 	resp.AdminResponse = adminResp
+	return
+}
+
+func (p *peer) RunChangePeer(ad *applyData, req *raft_cmdpb.AdminRequest) (
+	resp *raft_cmdpb.AdminResponse, result applyResult, err error) {
+	peer := req.ChangePeer.Peer
+	storeID := peer.StoreId
+	changeType := req.ChangePeer.ChangeType
+	region := new(metapb.Region)
+	err = util.CloneMsg(p.Region(), region)
+	if err != nil {
+		return
+	}
+	// fmt.Printf("%s run ConfChange with peer_id %d, type %s, epoch %s", p.Tag, peer.Id, changeType, region.RegionEpoch)
+	region.RegionEpoch.ConfVer++
+
+	switch changeType {
+	case eraftpb.ConfChangeType_AddNode:
+		if peerInfo := util.FindPeer(region, storeID); p != nil {
+			err = errors.New(fmt.Sprintf("%s : there is already a peer with peerInfo %s, region %s",
+				p.Tag, peerInfo, p.Region()))
+			return
+		}
+		region.Peers = append(region.Peers, peer)
+		// fmt.Printf("%s add peer successfully, peer %s, region %s", p.Tag, peer, p.Region())
+	case eraftpb.ConfChangeType_RemoveNode:
+		if peerInfo := util.RemovePeer(region, storeID); p != nil {
+			if !util.PeerEqual(peerInfo, peer) {
+				err = errors.New(fmt.Sprintf("%s can't remove unmatched peer, expected_peer %s, got_peer %s", p.Tag, peer, peerInfo))
+				return
+			}
+			if p.PeerId() == peer.Id {
+				p.pendingRemove = true
+			}
+		} else {
+			err = errors.New(fmt.Sprintf("%s: no such exist, peer %s, region %s", p.Tag, peer, p.Region()))
+			return
+		}
+		// fmt.Printf("%s remove peer successfully, peer %s, region %s", p.Tag, peer, p.Region())
+	}
+	state := rspb.PeerState_Normal
+	if p.pendingRemove {
+		state = rspb.PeerState_Tombstone
+	}
+	meta.WriteRegionState(ad.wb, region, state)
+	resp = &raft_cmdpb.AdminResponse{
+		ChangePeer: &raft_cmdpb.ChangePeerResponse{
+			Region: region,
+		},
+	}
+	result = applyResult{
+		resultType: applyResultTypeRunResult,
+		data: &runResultChangePeer{
+			confChange: new(eraftpb.ConfChange),
+			region:     region,
+			peer:       peer,
+		},
+	}
 	return
 }
 
