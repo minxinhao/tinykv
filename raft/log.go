@@ -219,6 +219,9 @@ func (l *RaftLog) Term(i uint64) (uint64, error) {
 }
 
 func (l *RaftLog) slice(lo, hi uint64) ([]pb.Entry, error) {
+	if len(l.entries) == 0 {
+		return nil, nil
+	}
 	if lo > hi {
 		panic(errors.New("Lo exceeds Hi"))
 	}
@@ -231,7 +234,7 @@ func (l *RaftLog) slice(lo, hi uint64) ([]pb.Entry, error) {
 		log.Panicf("slice[%d,%d) out of bound [%d,%d]", lo, hi, fi, l.LastIndex())
 	}
 
-	return l.entries[lo-l.snapLastIndex : hi-l.snapLastIndex], nil
+	return l.entries[lo-l.snapLastIndex-1 : hi-l.snapLastIndex-1], nil
 }
 
 func (l *RaftLog) matchForTerm(index, term uint64) bool {

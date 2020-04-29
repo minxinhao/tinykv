@@ -247,6 +247,7 @@ func (r *Raft) sendAppend(to uint64) bool {
 			panic("Can't send empty snapshot")
 		}
 		message.Snapshot = &snapshot
+		fmt.Printf("%d send snapshot to %d %v\n", r.id, to, message)
 	} else {
 		message.MsgType = pb.MessageType_MsgAppend
 		message.Index = progress.Next - 1
@@ -258,6 +259,7 @@ func (r *Raft) sendAppend(to uint64) bool {
 		}
 		message.Entries = entries
 		message.Commit = r.RaftLog.committed
+		fmt.Printf("%d send entry to %d %v\n", r.id, to, message)
 	}
 	r.send(message)
 	return true
@@ -386,7 +388,7 @@ func (r *Raft) AppendEntry(es ...pb.Entry) {
 func (r *Raft) Step(m pb.Message) error {
 	// Your Code Here (2A).
 	// Rules for all servers
-	if m.Term < r.Term && m.MsgType != pb.MessageType_MsgHup && m.MsgType != pb.MessageType_MsgPropose && m.MsgType != pb.MessageType_MsgBeat && m.MsgType != pb.MessageType_MsgTransferLeader {
+	if m.Term < r.Term && m.Term != 0 && m.MsgType != pb.MessageType_MsgHup && m.MsgType != pb.MessageType_MsgPropose && m.MsgType != pb.MessageType_MsgBeat && m.MsgType != pb.MessageType_MsgTransferLeader {
 		if m.MsgType == pb.MessageType_MsgAppend {
 			// fmt.Println(r.id, " reject append msg for term msg  ", m)
 		}
@@ -452,16 +454,16 @@ func (r *Raft) VoteThreshold() int {
 }
 
 func (r *Raft) StepMsgHup() {
-	// entries, err := r.RaftLog.slice(r.RaftLog.applied+1, r.RaftLog.committed+1)
-	// num_Conf := 0
-	// for i := range entries {
-	// 	if entries[i].EntryType == pb.EntryType_EntryConfChange {
-	// 		num_Conf++
-	// 	}
-	// }
-	// if num_Conf != 0 && r.RaftLog.committed > r.RaftLog.applied {
-	// 	return
-	// }
+	entries, err := r.RaftLog.slice(r.RaftLog.applied+1, r.RaftLog.committed+1)
+	num_Conf := 0
+	for i := range entries {
+		if entries[i].EntryType == pb.EntryType_EntryConfChange {
+			num_Conf++
+		}
+	}
+	if num_Conf != 0 && r.RaftLog.committed > r.RaftLog.applied {
+		return
+	}
 	// fmt.Println("Start election")
 	r.becomeCandidate()
 	index := r.RaftLog.LastIndex()
@@ -509,12 +511,24 @@ func (r *Raft) LeaderStep(m pb.Message) error {
 		}
 		return nil
 	case pb.MessageType_MsgPropose:
-		// fmt.Println("Leader step MessageType_MsgPropose ", m)
+		fmt.Println("Leader step MessageType_MsgPropose ", m)
 		if len(m.Entries) == 0 {
 			panic("Invalid propose message with empty entries")
 		}
 		if _, ok := r.Prs[r.id]; !ok {
 			return ErrProposalDropped
+		}
+		if r.leadTransferee != None {
+			return ErrProposalDropped
+		}
+		for i, e := range m.Entries {
+			if e.EntryType == pb.EntryType_EntryConfChange {
+				if r.PendingConfIndex > r.RaftLog.applied {
+					m.Entries[i] = &pb.Entry{EntryType: pb.EntryType_EntryNormal}
+				} else {
+					r.PendingConfIndex = r.RaftLog.LastIndex() + uint64(i) + 1
+				}
+			}
 		}
 
 		entries := make([]pb.Entry, 0, len(m.Entries))
@@ -579,6 +593,9 @@ func (r *Raft) LeaderStep(m pb.Message) error {
 						r.sendAppend(id)
 					}
 				}
+				if m.From == r.leadTransferee && progress.Match == r.RaftLog.LastIndex() {
+					r.send(pb.Message{To: m.From, MsgType: pb.MessageType_MsgTimeoutNow})
+				}
 			}
 		}
 	case pb.MessageType_MsgRequestVote:
@@ -602,8 +619,10 @@ func (r *Raft) LeaderStep(m pb.Message) error {
 		r.electionElapsed = 0
 		r.leadTransferee = leadTransferee
 		if progress.Match == r.RaftLog.LastIndex() {
-			r.send(pb.Message{To: leadTransferee, MsgType: pb.MessageType_MsgTimeoutNow})
+			fmt.Printf("send MessageType_MsgTimeoutNow to lastLeadTransferee %d \n", lastLeadTransferee)
+			r.send(pb.Message{From: r.id, To: leadTransferee, MsgType: pb.MessageType_MsgTimeoutNow})
 		} else {
+			fmt.Printf("sendappend to lastLeadTransferee %d\n", lastLeadTransferee)
 			r.sendAppend(leadTransferee)
 		}
 	}
@@ -630,7 +649,9 @@ func (r *Raft) CanditateStep(m pb.Message) error {
 	case pb.MessageType_MsgRequestVote:
 		r.send(pb.Message{To: m.From, Term: r.Term, MsgType: pb.MessageType_MsgRequestVoteResponse, Reject: true})
 	case pb.MessageType_MsgRequestVoteResponse:
-		r.votes[m.From] = !m.Reject
+		if _, ok := r.votes[m.From]; !ok {
+			r.votes[m.From] = !m.Reject
+		}
 		votesCount := 0
 		for _, vote := range r.votes {
 			if vote {

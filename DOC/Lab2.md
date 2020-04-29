@@ -237,4 +237,4 @@ func newTicker(regionID uint64, cfg *config.Config) *ticker {
 	...
 }
 ```
-7. 只设置了`p.peerStorage.Engines.Kv的applystate1`，忘记了设置`p.peerStorage.applyState = ad.applyState`
+7. 只设置了`p.peerStorage.Engines.Kv的applystate`，忘记了设置`p.peerStorage.applyState = ad.applyState`

@@ -17,3 +17,5 @@ To start a new election immediately you can call `Raft.Step` with `MsgHup` messa
 Call `pb.ConfChange.Marshal` to get bytes represent of `pb.ConfChange` and  put it to `pb.Entry.Data`
 
 #### Notes
+
+1. 没有对应的make rule

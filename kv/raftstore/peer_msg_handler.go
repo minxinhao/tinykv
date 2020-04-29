@@ -128,24 +128,17 @@ func (d *peerMsgHandler) ApplyChangePeer(changePeer *runResultChangePeer) {
 		d.removePeerCache(peerID)
 	}
 
-	// In pattern matching above, if the peer is the leader,
-	// it will push the change peer into `peers_start_pending_time`
-	// without checking if it is duplicated. We move `heartbeat_pd` here
-	// to utilize `collect_pending_peers` in `heartbeat_pd` to avoid
-	// adding the redundant peer.
 	if d.IsLeader() {
-		// Notify scheduler immediately.
 		fmt.Printf("%s notify scheduler with change peer region %s", d.Tag, d.Region())
 		d.HeartbeatScheduler(d.ctx.schedulerTaskSender)
 	}
 	myPeerID := d.PeerId()
 
-	// We only care remove itself now.
-	if changeType == eraftpb.ConfChangeType_RemoveNode && cp.peer.StoreId == d.storeID() {
+	if changeType == eraftpb.ConfChangeType_RemoveNode && changePeer.peer.StoreId == d.storeID() {
 		if myPeerID == peerID {
 			d.destroyPeer()
 		} else {
-			panic(fmt.Sprintf("%s trying to remove unknown peer %s", d.Tag, cp.peer))
+			panic(fmt.Sprintf("%s: can't remove unkown peer %s", d.Tag, changePeer.peer))
 		}
 	}
 }
