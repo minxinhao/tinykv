@@ -484,9 +484,11 @@ func (c *Cluster) MustNonePeer(regionID uint64, peer *metapb.Peer) {
 		if region != nil {
 			if p := FindPeer(region, peer.GetStoreId()); p != nil {
 				if p.GetId() != peer.GetId() {
+					panic("End")
 					return
 				}
 			} else {
+				panic("End")
 				return
 			}
 		}

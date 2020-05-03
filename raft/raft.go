@@ -524,6 +524,7 @@ func (r *Raft) LeaderStep(m pb.Message) error {
 		for i, e := range m.Entries {
 			if e.EntryType == pb.EntryType_EntryConfChange {
 				if r.PendingConfIndex > r.RaftLog.applied {
+					fmt.Println("Add confchange fail because of existing conf chang")
 					m.Entries[i] = &pb.Entry{EntryType: pb.EntryType_EntryNormal}
 				} else {
 					r.PendingConfIndex = r.RaftLog.LastIndex() + uint64(i) + 1

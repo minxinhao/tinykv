@@ -1,6 +1,7 @@
 package raftstore
 
 import (
+	"bytes"
 	"fmt"
 	"time"
 
@@ -523,15 +524,18 @@ func (p *peer) ProposeConfChange(cfg *config.Config, req *raft_cmdpb.RaftCmdRequ
 	}
 
 	changePeer := GetChangePeerCmd(req)
-	var cc eraftpb.ConfChange
-	cc.ChangeType = changePeer.ChangeType
-	cc.NodeId = changePeer.Peer.Id
-	cc.Context = data
-
-	fmt.Printf("%v propose conf change %v peer %v", p.Tag, cc.ChangeType, cc.NodeId)
+	var congChange eraftpb.ConfChange
+	congChange.ChangeType = changePeer.ChangeType
+	congChange.NodeId = changePeer.Peer.Id
+	congChange.Context = data
+	// cmd := new(raft_cmdpb.RaftCmdRequest)
+	// if err := cmd.Unmarshal(congChange.Context); err != nil {
+	// 	panic(err)
+	// }
+	fmt.Printf("%v propose conf change %v peer %v\n", p.Tag, congChange, congChange.NodeId)
 
 	proposeIndex := p.nextProposalIndex()
-	if err = p.RaftGroup.ProposeConfChange(cc); err != nil {
+	if err = p.RaftGroup.ProposeConfChange(congChange); err != nil {
 		return 0, err
 	}
 	if p.nextProposalIndex() == proposeIndex {
@@ -662,9 +666,8 @@ func (p *peer) HandleRaftReady(pdScheduler chan<- worker.Task, trans Transport) 
 		return nil
 	}
 
-	fmt.Printf("%v handle raftready\n", p.Tag)
-
 	ready := p.RaftGroup.Ready()
+	fmt.Printf("%v handle raftready %v\n", p.Tag, ready)
 	if ready.Snapshot.GetMetadata() == nil {
 		ready.Snapshot.Metadata = &eraftpb.SnapshotMetadata{}
 	}
@@ -684,7 +687,7 @@ func (p *peer) HandleRaftReady(pdScheduler chan<- worker.Task, trans Transport) 
 
 	p.RaftGroup.Advance(ready)
 	if applySnapResult != nil {
-		p.handleApllySnap()
+		p.handleApplySnap()
 		p.LastApplyingIdx = p.peerStorage.truncatedIndex()
 	} else {
 		committedEntries := ready.CommittedEntries
@@ -697,13 +700,15 @@ func (p *peer) HandleRaftReady(pdScheduler chan<- worker.Task, trans Transport) 
 	return applySnapResult
 }
 
-func (p *peer) handleApllySnap() {
+func (p *peer) handleApplySnap() {
 	log.Infof("%s accept snapshot with %d", p.Tag, p.Term())
 	for _, pro := range p.normalCmd {
 		notifyStaleCommand(p.regionId, p.PeerId(), p.Term(), *pro)
 	}
 	p.normalCmd = p.normalCmd[:0]
-	if confchange := p.confChange; confchange != nil {
+	confchange := p.confChange
+	p.confChange = nil
+	if confchange != nil {
 		notifyStaleCommand(p.regionId, p.PeerId(), p.Term(), *confchange)
 	}
 }
@@ -724,6 +729,7 @@ type applyData struct {
 	lastAppliedIndex uint64
 	cbs              []applyCallback
 	applyTaskResList []*ApplyRes
+	region           *metapb.Region
 }
 
 type applyResultType int
@@ -749,6 +755,11 @@ type runResultChangePeer struct {
 	confChange *eraftpb.ConfChange
 	peer       *metapb.Peer
 	region     *metapb.Region
+}
+
+type runResultSplitRegion struct {
+	regions []*metapb.Region
+	derived *metapb.Region
 }
 
 func (ad *applyData) initApplyResult(p *peer) {
@@ -818,6 +829,19 @@ func (p *peer) handleApply(committedEntries []eraftpb.Entry) {
 	p.applyData.finishFor(p, results)
 }
 
+func (p *peer) processRaftCmd(ad *applyData, index, term uint64, cmd *raft_cmdpb.RaftCmdRequest) applyResult {
+	if index == 0 {
+		panic("Unexpected 0 index in handleRaftEntryConfChange")
+	}
+	isConfChange := GetChangePeerCmd(cmd) != nil
+	resp, txn, result := p.applyRaftCmd(ad, index, term, cmd)
+	fmt.Printf("Applied command. region_id %d, peer_id %d, index %d\n", p.Region().Id, p.PeerId(), index)
+	BindRespTerm(resp, term)
+	cmdCB := p.findCallback(index, term, isConfChange)
+	ad.cbs[len(ad.cbs)-1].push(cmdCB, resp, txn)
+	return result
+}
+
 func (p *peer) handleRaftEntryConfChange(ad *applyData, entry *eraftpb.Entry) applyResult {
 	index := entry.Index
 	term := entry.Term
@@ -829,21 +853,8 @@ func (p *peer) handleRaftEntryConfChange(ad *applyData, entry *eraftpb.Entry) ap
 	if err := cmd.Unmarshal(confChange.Context); err != nil {
 		panic(err)
 	}
-	err := cmd.Unmarshal(entry.Data)
-	if err != nil {
-		panic(err)
-	}
-	if index == 0 {
-		panic("Unexpected 0 index in handleRaftEntryConfChange")
-	}
-	resp, txn, result := p.applyRaftCmd(ad, index, term, cmd)
 
-	fmt.Printf("handleRaftEntryConfChange: region_id %d, peer_id %d, index %d\n", p.Region().Id, p.PeerId(), index)
-
-	BindRespTerm(resp, term)
-	cmdCB := p.findCallback(index, term)
-	// fmt.Println("sizeof ad.cbs ", len(ad.cbs))
-	ad.cbs[len(ad.cbs)-1].push(cmdCB, resp, txn)
+	result := p.processRaftCmd(ad, index, term, cmd)
 
 	switch result.resultType {
 	case applyResultTypeNone:
@@ -860,6 +871,9 @@ func (p *peer) handleRaftEntryConfChange(ad *applyData, entry *eraftpb.Entry) ap
 }
 
 func (ad *applyData) finishFor(p *peer, results []runResult) {
+	if !p.pendingRemove {
+		ad.wb.SetMeta(meta.ApplyStateKey(p.regionId), &p.applyData.applyState)
+	}
 	res := &ApplyRes{
 		regionID:   p.regionId,
 		runResults: results,
@@ -868,10 +882,10 @@ func (ad *applyData) finishFor(p *peer, results []runResult) {
 }
 
 func (p *peer) popNormal(term uint64) *proposal {
-	if len(p.proposals) == 0 {
+	if len(p.normalCmd) == 0 {
 		return nil
 	}
-	proposal := p.proposals[0]
+	proposal := p.normalCmd[0]
 	if proposal.term > term {
 		return nil
 	}
@@ -896,18 +910,7 @@ func (p *peer) handleEntryNormal(ad *applyData, entry *eraftpb.Entry) applyResul
 		if err != nil {
 			panic(err)
 		}
-		if index == 0 {
-			panic("Handle raft cmd needs a none zero index")
-		}
-		resp, txn, result := p.applyRaftCmd(ad, index, term, cmd)
-
-		fmt.Printf("Applied command. region_id %d, peer_id %d, index %d\n", p.Region().Id, p.PeerId(), index)
-
-		BindRespTerm(resp, term)
-		cmdCB := p.findCallback(index, term)
-		// fmt.Println("sizeof ad.cbs ", len(ad.cbs))
-		ad.cbs[len(ad.cbs)-1].push(cmdCB, resp, txn)
-		return result
+		return p.processRaftCmd(ad, index, term, cmd)
 	}
 
 	ad.applyState.AppliedIndex = index
@@ -921,24 +924,21 @@ func (p *peer) handleEntryNormal(ad *applyData, entry *eraftpb.Entry) applyResul
 	return applyResult{}
 }
 
-// func (p *peer) RaftCmd(ad *applyData, index, term uint64, cmd *raft_cmdpb.RaftCmdRequest) applyResult {
-// 	if index == 0 {
-// 		panic("Process raft cmd needs a none zero index")
-// 	}
-// 	resp, txn, result := p.applyRaftCmd(ad, index, term, cmd)
-
-// 	fmt.Printf("Applied command. region_id %d, peer_id %d, index %d\n", p.Region().Id, p.PeerId(), index)
-
-// 	BindRespTerm(resp, term)
-// 	cmdCB := p.findCallback(index, term)
-// 	fmt.Println("sizeof ad.cbs ", len(ad.cbs))
-// 	ad.cbs[len(ad.cbs)-1].push(cmdCB, resp, txn)
-// 	return result
-// }
-
-func (p *peer) findCallback(index, term uint64) *message.Callback {
+func (p *peer) findCallback(index, term uint64, isConfChange bool) *message.Callback {
 	regionID := p.regionId
 	peerID := p.PeerId()
+	if isConfChange {
+		cmd := p.confChange
+		p.confChange = nil
+		if cmd == nil {
+			return nil
+		}
+		if cmd.index == index && cmd.term == term {
+			return cmd.cb
+		}
+		notifyStaleCommand(regionID, peerID, term, *cmd)
+		return nil
+	}
 	for {
 		head := p.popNormal(term)
 		if head == nil {
@@ -964,9 +964,19 @@ func (p *peer) applyRaftCmd(ad *applyData, index, term uint64,
 			txn = nil
 		}
 		resp = ErrResp(err)
+		applyResult.resultType = applyResultTypeNone
 	}
 
 	ad.applyState.AppliedIndex = index
+	if applyResult.resultType == applyResultTypeRunResult {
+		switch x := applyResult.data.(type) {
+		case *runResultChangePeer:
+			ad.region = x.region
+		case *runResultSplitRegion:
+			ad.region = x.derived
+		default:
+		}
+	}
 	return resp, txn, applyResult
 }
 
@@ -992,9 +1002,11 @@ func (p *peer) RunAdminCmd(ad *applyData, req *raft_cmdpb.RaftCmdRequest) (
 	case raft_cmdpb.AdminCmdType_ChangePeer:
 		adminResp, result, err = p.RunChangePeer(ad, adminReq)
 	case raft_cmdpb.AdminCmdType_Split:
+		adminResp, result, err = p.RunSplit(ad, adminReq)
 	case raft_cmdpb.AdminCmdType_CompactLog:
 		adminResp, result, err = p.RunCompactLog(ad, adminReq)
 	case raft_cmdpb.AdminCmdType_TransferLeader:
+		err = errors.New("TransferLeader needn't to be run in applying")
 	case raft_cmdpb.AdminCmdType_InvalidAdmin:
 		err = errors.New("Invalid  AdminCmdType")
 	}
@@ -1004,6 +1016,77 @@ func (p *peer) RunAdminCmd(ad *applyData, req *raft_cmdpb.RaftCmdRequest) (
 	adminResp.CmdType = cmdType
 	resp = newCmdRespForReq(req)
 	resp.AdminResponse = adminResp
+	return
+}
+
+func (p *peer) RunSplit(ad *applyData, req *raft_cmdpb.AdminRequest) (
+	resp *raft_cmdpb.AdminResponse, result applyResult, err error) {
+	splitReq := req.Split
+	derived := new(metapb.Region)
+	if err := util.CloneMsg(p.Region(), derived); err != nil {
+		panic(err)
+	}
+
+	regions := make([]*metapb.Region, 0, 2)
+	keys := make([][]byte, 0, 2)
+	keys = append(keys, derived.StartKey)
+	splitKey := splitReq.SplitKey
+	if len(splitKey) == 0 {
+		err = errors.New("Split key shouldn't be null")
+		return
+	}
+	if bytes.Compare(splitKey, keys[len(keys)-1]) <= 0 {
+		err = errors.Errorf("Illegal split key in splitReq:%s", splitReq)
+		return
+	}
+	if len(splitReq.NewPeerIds) != len(derived.Peers) {
+		err = errors.New("Unmatched peers number")
+		return
+	}
+	keys = append(keys, splitKey)
+
+	err = util.CheckKeyInRegion(keys[len(keys)-1], p.Region())
+	if err != nil {
+		return
+	}
+
+	if len(keys) < 2 {
+		err = errors.New("Missing key in splitreq")
+		return
+
+	}
+
+	fmt.Printf("%s split region %s, keys %v", p.Tag, p.Region(), keys)
+	derived.RegionEpoch.Version++
+	newRegion := &metapb.Region{
+		Id:          splitReq.NewRegionId,
+		RegionEpoch: derived.RegionEpoch,
+		StartKey:    keys[0],
+		EndKey:      keys[1],
+	}
+	newRegion.Peers = make([]*metapb.Peer, len(derived.Peers))
+	for j := range newRegion.Peers {
+		newRegion.Peers[j] = &metapb.Peer{
+			Id:      splitReq.NewPeerIds[j],
+			StoreId: derived.Peers[j].StoreId,
+		}
+	}
+	meta.WriteRegionState(ad.wb, newRegion, rspb.PeerState_Normal)
+	writeInitialApplyState(ad.wb, newRegion.Id)
+	regions = append(regions, newRegion)
+	derived.StartKey = keys[len(keys)-1]
+	regions = append(regions, derived)
+	meta.WriteRegionState(ad.wb, derived, rspb.PeerState_Normal)
+
+	resp = &raft_cmdpb.AdminResponse{
+		Split: &raft_cmdpb.SplitResponse{
+			Regions: regions,
+		},
+	}
+	result = applyResult{resultType: applyResultTypeRunResult, data: &runResultSplitRegion{
+		regions: regions,
+		derived: derived,
+	}}
 	return
 }
 

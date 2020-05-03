@@ -574,7 +574,9 @@ func TestBasicConfChange3B(t *testing.T) {
 	defer cluster.Shutdown()
 
 	cluster.MustTransferLeader(1, NewPeer(1, 1))
+	fmt.Println("step 1")
 	cluster.MustRemovePeer(1, NewPeer(2, 2))
+	panic("End")
 	cluster.MustRemovePeer(1, NewPeer(3, 3))
 	cluster.MustRemovePeer(1, NewPeer(4, 4))
 	cluster.MustRemovePeer(1, NewPeer(5, 5))
@@ -582,7 +584,7 @@ func TestBasicConfChange3B(t *testing.T) {
 	// now region 1 only has peer: (1, 1)
 	cluster.MustPut([]byte("k1"), []byte("v1"))
 	MustGetNone(cluster.engines[2], []byte("k1"))
-
+	fmt.Println("step 2")
 	// add peer (2, 2) to region 1
 	cluster.MustAddPeer(1, NewPeer(2, 2))
 	cluster.MustPut([]byte("k2"), []byte("v2"))
@@ -599,7 +601,7 @@ func TestBasicConfChange3B(t *testing.T) {
 	// add peer (3, 3) to region 1
 	cluster.MustAddPeer(1, NewPeer(3, 3))
 	cluster.MustRemovePeer(1, NewPeer(2, 2))
-
+	fmt.Println("step 3")
 	cluster.MustPut([]byte("k3"), []byte("v3"))
 	cluster.MustGet([]byte("k3"), []byte("v3"))
 	MustGetEqual(cluster.engines[3], []byte("k1"), []byte("v1"))
@@ -621,7 +623,7 @@ func TestBasicConfChange3B(t *testing.T) {
 	cluster.MustAddPeer(1, NewPeer(2, 4))
 	// remove peer (3, 3) from region 1
 	cluster.MustRemovePeer(1, NewPeer(3, 3))
-
+	fmt.Println("step 4")
 	cluster.MustPut([]byte("k4"), []byte("v4"))
 	MustGetEqual(cluster.engines[2], []byte("k1"), []byte("v1"))
 	MustGetEqual(cluster.engines[2], []byte("k4"), []byte("v4"))

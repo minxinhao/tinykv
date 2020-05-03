@@ -97,12 +97,77 @@ func (d *peerMsgHandler) onApplyResult(res *ApplyRes) {
 			d.ScheduleCompactLog(x.firstIndex, x.truncatedIndex)
 		case *runResultChangePeer:
 			d.ApplyChangePeer(x)
+		case *runResultSplitRegion:
+			d.onReadySplitRegion(x.derived, x.regions)
 		default:
 		}
 	}
 	res.runResults = nil
 	if d.stopped {
 		return
+	}
+}
+
+func (d *peerMsgHandler) onReadySplitRegion(derived *metapb.Region, regions []*metapb.Region) {
+	meta := d.ctx.storeMeta
+	regionID := derived.Id
+	meta.setRegion(derived, d.peer)
+	d.peer.SizeDiffHint = 0
+	isLeader := d.IsLeader()
+	if isLeader {
+		d.HeartbeatScheduler(d.ctx.schedulerTaskSender)
+	}
+
+	if meta.regionRanges.Delete(&regionItem{region: regions[0]}) == nil {
+		panic(fmt.Sprintf("%s missing original region in split", d.Tag))
+	}
+	d.peer.ApproximateSize = nil
+
+	for _, newRegion := range regions {
+		newRegionID := newRegion.Id
+		notExist := meta.regionRanges.ReplaceOrInsert(&regionItem{region: newRegion})
+		if notExist != nil {
+			panic(fmt.Sprintf("%v %v newregion:%v, region:%v", d.Tag, notExist.(*regionItem).region, newRegion, regions[0]))
+		}
+		if newRegionID == regionID {
+			continue
+		}
+
+		if r, ok := meta.regions[newRegionID]; ok {
+			if len(r.Peers) > 0 {
+				panic(fmt.Sprintf("region %d duplicated region %s for split region %s", newRegionID, r, newRegion))
+			}
+			d.ctx.router.close(newRegionID)
+		}
+
+		newPeer, err := createPeer(d.ctx.store.Id, d.ctx.cfg, d.ctx.regionTaskSender, d.ctx.engine, newRegion)
+		if err != nil {
+			panic(fmt.Sprintf("create new split region %s with error %v", newRegion, err))
+		}
+		metaPeer := newPeer.Meta
+
+		for _, p := range newRegion.GetPeers() {
+			newPeer.insertPeerCache(p)
+		}
+
+		campaigned := newPeer.MaybeCampaign(isLeader)
+
+		if isLeader {
+			newPeer.HeartbeatScheduler(d.ctx.schedulerTaskSender)
+		}
+
+		meta.regions[newRegionID] = newRegion
+		d.ctx.router.register(newPeer)
+		_ = d.ctx.router.send(newRegionID, message.NewPeerMsg(message.MsgTypeStart, newRegionID, nil))
+		if !campaigned {
+			for i, msg := range meta.pendingVotes {
+				if util.PeerEqual(msg.ToPeer, metaPeer) {
+					meta.pendingVotes = append(meta.pendingVotes[:i], meta.pendingVotes[i+1:]...)
+					_ = d.ctx.router.send(newRegionID, message.NewPeerMsg(message.MsgTypeRaftMessage, newRegionID, msg))
+					break
+				}
+			}
+		}
 	}
 }
 

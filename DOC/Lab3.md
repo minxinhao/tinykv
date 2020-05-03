@@ -19,3 +19,57 @@ Call `pb.ConfChange.Marshal` to get bytes represent of `pb.ConfChange` and  put 
 #### Notes
 
 1. 没有对应的make rule
+2. The code you need to modify is all about `raft/raft.go` and `raft/rawnode.go`,好像还是要修改peer_msg_handle中和apply相关的吧。When entries with type `EntryConfChange` are committed, you must apply it through `RawNode.ApplyConfChange` with the `pb.ConfChange` in the entry。感觉这样的设计挺奇怪的。
+3. 没有提及raft模块不允许删除leader
+
+### Part B
+As Raft module supported membership change and leadership change now, in this part you need to make TinyKV support these admin commands based on part A. As you can see in `proto/proto/raft_cmdpb.proto`, there are four types of admin commands:
+CompactLog (Already implemented in project 2 part C)
+TransferLeader
+ChangePeer
+Split
+`TransferLeader` and `ChangePeer` are the commands based on the Raft support of leadership change and membership change. These will be used as the basic operator steps for the balance scheduler. `Split` splits one Region into two Regions, that’s the base for multi raft. You will implement them step by step.
+#### The Code
+All the changes are based on the implementation of project2, so the code you need to modify is all about `kv/raftstore/peer_msg_handler.go` and `kv/raftstore/peer.go`.
+#### Propose transfer leader
+This step is quite simple. As a raft command, `TransferLeader` will be proposed as a Raft entry. But `TransferLeader` actually is an action no need to replicate to other peers, so you just need to call the `TransferLeader()` method of  `RawNode` instead of `Propose()` for `TransferLeader` command.
+#### Implement conf change in raftstore
+The conf change have two different types, `AddNode` and `RemoveNode`. Just as its name implies, it adds a Peer or removes a Peer from the Region. 
+To implement conf change, you should learn the terminology of `RegionEpoch` first. `RegionEpoch` is a part of the meta information of `metapb.Region`. When a Region adds or removes Peer or splits, the Region’s epoch has changed. RegionEpoch’s `conf_ver` increases during ConfChange while `version` increases during split. It will be used to guarantee the latest region information under network isolation that two leaders in one Region.
+You need to make raftstore support handling conf change commands. The process would be: 
+Propose conf change admin command by `ProposeConfChange`
+After the log is committed, change the `RegionLocalState`, including `RegionEpoch` and `Peers` in `Region`
+Call `ApplyConfChange()` of `raft.RawNode`
+Hints:
+For executing `AddNode`, the newly added Peer will be created by heartbeat from the leader, check `maybeCreatePeer()` of `storeWorker`. At that time, this Peer is uninitialized and any information of its Region is unknown to us, so we use 0 to initialize its `Log Term` and `Index`. Leader then will know this Follower has no data (there exists a Log gap from 0 to 5) and it will directly send a snapshot to this Follower.
+For executing `RemoveNode`, you should call the `destroyPeer()` explicitly to stop the Raft module. The destroy logic is provided for you.
+Do not forget to update the region state in `storeMeta` of `GlobalContext`
+Test schedule the command of one conf change multiple times until the conf change is applied, so you need to consider how to ignore the duplicate commands of same conf change. 
+####  Implement split region in raftstore
+To support multi-raft, the system performs data sharding and makes each Raft group store just a portion of data. Hash and Range are commonly used for data sharding. TinyKV uses Range and the main reason is that Range can better aggregate keys with the same prefix, which is convenient for operations like scan. Besides, Range outperforms in split than Hash. Usually, it only involves metadata modification and there is no need to move data around.
+```
+message Region {
+    uint64 id = 1;
+    // Region key range [start_key, end_key).
+    bytes start_key = 2;
+    bytes end_key = 3;
+    RegionEpoch region_epoch = 4;
+    repeated Peer peers = 5;
+}
+```
+Let’s take a relook at Region definition, it includes two fields `start_key` and `end_key` to indicate the range of data which the Region is responsible for. So split is the key step to support multi-raft. At the beginning, there is only one Region with range [“”, “”). You can regard the key space as a loop, so [“”, “”) stands for the whole space. With the data written, the split checker will checks the region size every `cfg.SplitRegionCheckTickInterval`, and generates a split key if possible to cut the Region into two parts, you can check the logic in `kv/raftstore/runner/split_check.go`. The split key will be wrapped as a `MsgSplitRegion` handled by `onPrepareSplitRegion()`. 
+To make sure the ids of the newly created Region and Peers are unique, the ids are allocated by scheduler. It’s also provided, so you don’t have to implement it.  `onPrepareSplitRegion()` actually schedules a task for the pd worker to ask the scheduler for the ids.  And make a split admin command after receiving the response from scheduler, see `onAskBatchSplit()` in `kv/raftstore/runner/pd_task.go`.  
+So your task is to implement the process of handling split admin command, just like conf change does. The provided framework supports multiple raft, see `kv/raftstore/router.go`. When a Region splits into two Regions, one of the Regions will inherit the metadata before splitting and just modify its Range and RegionEpoch while the other will create relevant meta information. 
+Hints:
+The corresponding Peer of this newly-created Region should be created by `createPeer()` and registered to the router.regions. And the region’s info should be inserted into `regionRanges` in ctx.StoreMeta.
+For the case region split with network isolation,  the snapshot to be applied may have overlap with the existing region’s range. The check logic is in `checkSnapshot()` 
+in `kv/raftstore/peer_msg_handler.go`. Please keep it in mind when implementing and take care of that case. 
+Use `engine_util.ExceedEndKey()` to compare with region’s end key. Because when the end key equals “”,  any key will equal or greater than “”.
+There are more errors need to be considered: `ErrRegionNotFound`, `ErrKeyNotInRegion`, `ErrEpochNotMatch`. 
+
+
+#### Notes
+
+1. Propose conf change admin command by `ProposeConfChange` 啥意思？是有帮助函数吗
+2. After the log is committed,change the `RegionLocalState`, including `RegionEpoch` and `Peers` in `Region`
+Call `ApplyConfChange()` of `raft.RawNode` 为啥都是log提交后？不是在apply的时候。
